@@ -1,0 +1,16 @@
+# Development override with hot reload
+# Use: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+version: '3.8'
+
+services:
+  backend:
+    volumes:
+      - ./backend/app:/app/app:ro  # Hot reload for Python code
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --log-level debug
+
+  frontend:
+    volumes:
+      - ./frontend/src:/app/src:ro  # Hot reload for React code
+    environment:
+      - CHOKIDAR_USEPOLLING=true   # For file watching in Docker

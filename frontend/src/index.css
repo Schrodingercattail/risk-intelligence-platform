@@ -1,0 +1,25 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom base styles */
+body {
+  @apply bg-gray-50 text-gray-900;
+}
+
+/* Risk level utilities */
+.risk-low {
+  @apply bg-green-100 text-green-800 border-green-200;
+}
+
+.risk-medium {
+  @apply bg-yellow-100 text-yellow-800 border-yellow-200;
+}
+
+.risk-high {
+  @apply bg-red-100 text-red-800 border-red-200;
+}
+
+.risk-critical {
+  @apply bg-red-200 text-red-900 border-red-300;
+}

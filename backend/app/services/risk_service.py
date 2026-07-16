@@ -1,0 +1,387 @@
+"""
+Risk Scoring Service
+
+Orchestrates ML + Rules + Graph for combined risk scoring.
+Service Layer - Independent of API, coordinates multiple scoring components.
+"""
+from typing import Dict, Any, Optional
+from datetime import datetime, timezone
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from decimal import Decimal
+
+from app.models.database import (
+    RiskEvent, RiskFactor, User, FeatureTable,
+    RiskLevel, CaseStatus,
+)
+from app.config import settings
+from app.ml.model import MLInferenceService
+
+
+class RiskScoringService:
+    """
+    Risk Scoring Service
+
+    Orchestrates ML + Rules + Graph for combined risk scoring.
+    Input: feature_table
+    Output: risk_events with ml_score, rule_score, graph_score, final_score
+
+    Service boundary: This service coordinates scoring but delegates
+    actual ML inference and rule evaluation to appropriate components.
+    """
+
+    def __init__(self, db: AsyncSession):
+        """Initialize risk service with database session and ML model."""
+        self.db = db
+        self.ml_service = MLInferenceService()
+
+    async def score_user(self, user_id: str) -> RiskEvent:
+        """
+        Calculate risk scores for a user.
+
+        Args:
+            user_id: User to score
+
+        Returns:
+            RiskEvent with all scores
+        """
+        # Get user features
+        feature = await self.db.get(FeatureTable, user_id)
+        if not feature:
+            raise ValueError(f"No features found for user {user_id}")
+
+        # Calculate component scores
+        ml_probability, ml_score = await self._calculate_ml_score(feature)
+        rule_score = await self._calculate_rule_score(feature)
+        graph_score = await self._calculate_graph_score(user_id)
+
+        # Combine scores (weighted)
+        final_score = self._combine_scores(ml_score, rule_score, graph_score)
+
+        # Determine risk level
+        risk_level = self._determine_risk_level(final_score)
+
+        # Determine primary reason
+        primary_reason = self._determine_primary_reason(
+            ml_score, rule_score, graph_score
+        )
+
+        # Get recommended action
+        recommended_action = self._get_recommended_action(risk_level)
+
+        # Create risk event
+        risk_event = RiskEvent(
+            user_id=user_id,
+            risk_score=Decimal(str(final_score)),
+            risk_probability=Decimal(str(ml_probability)),  # Use ML probability
+            risk_level=risk_level,
+            primary_reason=primary_reason,
+            recommended_action=recommended_action,
+            detected_at=datetime.now(timezone.utc),
+            event_type=self._determine_event_type(primary_reason),
+            ml_score=Decimal(str(ml_score)),
+            rule_score=Decimal(str(rule_score)),
+            graph_score=Decimal(str(graph_score)),
+        )
+
+        self.db.add(risk_event)
+        await self.db.flush()  # Flush to get risk_event.id before creating factors
+
+        # Create risk factors
+        await self._create_risk_factors(risk_event, feature)
+
+        await self.db.commit()
+        await self.db.refresh(risk_event)
+
+        # Update user's current risk score
+        user = await self.db.get(User, user_id)
+        if user:
+            user.current_risk_score = Decimal(str(final_score))
+            user.risk_level = risk_level
+            await self.db.commit()
+
+        return risk_event
+
+    async def score_all_users(self) -> int:
+        """
+        Score all users with features.
+
+        Returns:
+            Number of risk events created
+        """
+        result = await self.db.execute(select(FeatureTable.user_id))
+        user_ids = [row[0] for row in result]
+
+        count = 0
+        for user_id in user_ids:
+            await self.score_user(user_id)
+            count += 1
+
+        return count
+
+    async def _calculate_ml_score(self, feature: FeatureTable) -> tuple[float, float]:
+        """
+        Calculate ML-based risk score using LightGBM model.
+
+        Returns:
+            (risk_probability, risk_score_0_100)
+        """
+        # Prepare feature dictionary
+        features_dict = {
+            'shared_device_count': feature.shared_device_count or 0,
+            'linked_account_count': feature.linked_account_count or 0,
+            'unique_ip_count': feature.unique_ip_count or 0,
+            'trade_frequency_24h': feature.trade_frequency_24h or 0,
+            'trade_frequency_7d': feature.trade_frequency_7d or 0,
+            'opposite_trade_ratio': float(feature.opposite_trade_ratio) if feature.opposite_trade_ratio else 0.0,
+            'avg_trade_size': float(feature.avg_trade_size) if feature.avg_trade_size else 0.0,
+            'trade_volume_24h': float(feature.trade_volume_24h) if feature.trade_volume_24h else 0.0,
+            'account_age_days': feature.account_age_days or 0,
+            'active_days_count': feature.active_days_count or 0,
+            'withdrawal_risk_score': float(feature.withdrawal_risk_score) if feature.withdrawal_risk_score else 0.0,
+            'withdrawal_frequency_24h': feature.withdrawal_frequency_24h or 0,
+            'withdrawal_volume_24h': float(feature.withdrawal_volume_24h) if feature.withdrawal_volume_24h else 0.0,
+            'first_withdrawal_flag': 1 if feature.first_withdrawal_flag else 0,
+        }
+
+        # Get prediction from ML service
+        probability, score = self.ml_service.predict_proba(features_dict)
+
+        return probability, score
+
+    async def _calculate_rule_score(self, feature: FeatureTable) -> float:
+        """
+        Calculate rule-based risk score.
+
+        These are explicit expert rules for clear risk signals.
+        """
+        score = 0.0
+
+        # Rule: New account with high activity
+        if feature.account_age_days and feature.account_age_days < 7:
+            if feature.trade_frequency_24h and feature.trade_frequency_24h > 50:
+                score += 40
+
+        # Rule: High opposite trade ratio (coordinated trading indicator)
+        if feature.opposite_trade_ratio and float(feature.opposite_trade_ratio) > 0.4:
+            score += 35
+
+        # Rule: Multiple shared devices
+        if feature.shared_device_count and feature.shared_device_count > 3:
+            score += 30
+
+        # Rule: High withdrawal frequency
+        if feature.withdrawal_frequency_24h and feature.withdrawal_frequency_24h > 5:
+            score += 25
+
+        # Rule: First withdrawal to new address + high amount
+        if feature.first_withdrawal_flag and feature.withdrawal_frequency_24h:
+            score += 20
+
+        return round(min(score, 100), 2)
+
+    async def _calculate_graph_score(self, user_id: str) -> float:
+        """
+        Calculate graph-based risk score.
+
+        Based on cluster membership and position in network.
+        """
+        score = 0.0
+
+        # Check if user is in any suspicious cluster
+        from sqlalchemy import select
+        from app.models.database import ClusterMember, AccountCluster
+
+        result = await self.db.execute(
+            select(ClusterMember, AccountCluster)
+            .join(AccountCluster, ClusterMember.cluster_id == AccountCluster.cluster_id)
+            .where(ClusterMember.user_id == user_id)
+        )
+
+        for member, cluster in result:
+            # Base score from cluster risk
+            score += float(cluster.risk_score) * 0.3
+
+            # Additional score for cluster size
+            score += min(cluster.member_count * 5, 30)
+
+            # Hub users get higher score
+            if member.role_in_cluster == "hub":
+                score += 20
+
+        return round(min(score, 100), 2)
+
+    def _combine_scores(
+        self,
+        ml_score: float,
+        rule_score: float,
+        graph_score: float
+    ) -> float:
+        """Combine component scores using configured weights."""
+        final_score = (
+            ml_score * settings.ML_WEIGHT +
+            rule_score * settings.RULE_WEIGHT +
+            graph_score * settings.GRAPH_WEIGHT
+        )
+        return round(final_score, 2)
+
+    def _determine_risk_level(self, final_score: float) -> str:
+        """Determine risk level from final score."""
+        if final_score >= settings.HIGH_RISK_THRESHOLD * 100:
+            return RiskLevel.HIGH.value if final_score < 90 else RiskLevel.CRITICAL.value
+        elif final_score >= settings.MEDIUM_RISK_THRESHOLD * 100:
+            return RiskLevel.MEDIUM.value
+        else:
+            return RiskLevel.LOW.value
+
+    def _determine_primary_reason(
+        self,
+        ml_score: float,
+        rule_score: float,
+        graph_score: float
+    ) -> str:
+        """Determine primary risk reason based on highest component."""
+        scores = {
+            "ML Pattern Detection": ml_score,
+            "Explicit Risk Rules": rule_score,
+            "Graph Network Analysis": graph_score,
+        }
+
+        highest = max(scores.items(), key=lambda x: x[1])
+        return highest[0]
+
+    def _get_recommended_action(self, risk_level: str) -> str:
+        """Get recommended action based on risk level."""
+        actions = {
+            RiskLevel.CRITICAL.value: "Immediate Investigation",
+            RiskLevel.HIGH.value: "Manual Review",
+            RiskLevel.MEDIUM.value: "Monitor",
+            RiskLevel.LOW.value: "No Action",
+        }
+        return actions.get(risk_level, "No Action")
+
+    def _determine_event_type(self, primary_reason: str) -> str:
+        """Determine event type from primary reason."""
+        if "Graph" in primary_reason:
+            return "device_sharing"
+        elif "Rules" in primary_reason:
+            return "suspicious_activity"
+        else:
+            return "pattern_anomaly"
+
+    async def _create_risk_factors(
+        self,
+        risk_event: RiskEvent,
+        feature: FeatureTable
+    ):
+        """Create detailed risk factors for the event."""
+        # Create factors for significant features
+        factor_mapping = {
+            "shared_device_count": "Shared Device Relationships",
+            "linked_account_count": "Linked Account Network",
+            "opposite_trade_ratio": "Coordinated Trading Pattern",
+            "trade_frequency_24h": "High Trading Frequency",
+            "withdrawal_risk_score": "Abnormal Withdrawal Behavior",
+            "account_age_days": "New Account Risk",
+        }
+
+        for attr, name in factor_mapping.items():
+            value = getattr(feature, attr)
+            if value is not None and value != 0:
+                # Only create factor for significant values
+                if isinstance(value, (int, float)) and value > 0:
+                    factor = RiskFactor(
+                        risk_event_id=risk_event.id,
+                        factor_name=name,
+                        factor_value=float(value) if isinstance(value, Decimal) else value,
+                        factor_description=self._get_factor_description(name, value),
+                    )
+                    self.db.add(factor)
+
+    def _get_factor_description(self, factor_name: str, value: Any) -> str:
+        """Get human-readable description for a factor."""
+        descriptions = {
+            "Shared Device Relationships": f"{int(value)} linked accounts through shared devices",
+            "Linked Account Network": f"{int(value)} connected accounts detected",
+            "Coordinated Trading Pattern": f"{value*100:.1f}% opposite trading ratio detected",
+            "High Trading Frequency": f"{int(value)} trades in 24h period",
+            "Abnormal Withdrawal Behavior": f"Risk score: {value:.2f}",
+            "New Account Risk": f"{int(value)} days old - new account indicator",
+        }
+        return descriptions.get(factor_name, f"Value: {value}")
+
+
+class CaseManagementService:
+    """Service for managing investigation cases."""
+
+    def __init__(self, db: AsyncSession):
+        """Initialize case service with database session."""
+        self.db = db
+
+    async def create_case(self, user_id: str, risk_event_id: Optional[int] = None) -> Dict[str, Any]:
+        """Create a new investigation case."""
+        from app.models.database import Case
+
+        case_id = f"CASE_{datetime.now(timezone.utc).strftime('%Y%m%d')}_{user_id}"
+
+        case = Case(
+            case_id=case_id,
+            user_id=user_id,
+            risk_event_id=risk_event_id,
+            status=CaseStatus.NEW.value,
+            created_at=datetime.now(timezone.utc),
+        )
+
+        self.db.add(case)
+        await self.db.commit()
+        await self.db.refresh(case)
+
+        return {
+            "case_id": case.case_id,
+            "status": case.status,
+            "created_at": case.created_at,
+        }
+
+    async def update_case(
+        self,
+        case_id: str,
+        status: Optional[str] = None,
+        assigned_analyst: Optional[str] = None,
+        decision: Optional[str] = None,
+        notes: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Update an existing case."""
+        from app.models.database import Case
+
+        case = await self.db.execute(
+            select(Case).where(Case.case_id == case_id)
+        )
+        case_obj = case.scalar_one_or_none()
+
+        if not case_obj:
+            raise ValueError(f"Case {case_id} not found")
+
+        if status:
+            case_obj.status = status
+            if status == CaseStatus.CLOSED.value:
+                case_obj.closed_at = datetime.now(timezone.utc)
+
+        if assigned_analyst:
+            case_obj.assigned_analyst = assigned_analyst
+
+        if decision:
+            case_obj.decision = decision
+
+        if notes:
+            case_obj.notes = notes
+
+        case_obj.updated_at = datetime.now(timezone.utc)
+
+        await self.db.commit()
+        await self.db.refresh(case_obj)
+
+        return {
+            "case_id": case_obj.case_id,
+            "status": case_obj.status,
+            "updated_at": case_obj.updated_at,
+        }

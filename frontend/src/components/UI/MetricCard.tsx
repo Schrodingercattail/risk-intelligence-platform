@@ -16,7 +16,7 @@ interface MetricCardProps {
     direction: 'up' | 'down' | 'neutral';
     label?: string;
   };
-  color?: 'green' | 'yellow' | 'red' | 'blue' | 'purple' | 'gray';
+  color?: 'green' | 'yellow' | 'red' | 'blue' | 'purple' | 'slate';
   variant?: 'standard' | 'premium';
   size?: 'sm' | 'md' | 'lg';
   target?: {
@@ -31,7 +31,7 @@ const colorStyles = {
   red: 'bg-red-50 border-red-200 text-red-800',
   blue: 'bg-blue-50 border-blue-200 text-blue-800',
   purple: 'bg-purple-50 border-purple-200 text-purple-800',
-  gray: 'bg-gray-50 border-gray-200 text-gray-800',
+  slate: 'bg-slate-50 border-slate-200 text-slate-800',
 };
 
 const premiumColorStyles = {
@@ -40,13 +40,13 @@ const premiumColorStyles = {
   red: 'bg-gradient-to-br from-red-50 to-red-100/50 border-red-200 text-red-900',
   blue: 'bg-gradient-to-br from-blue-50 to-blue-100/50 border-blue-200 text-blue-900',
   purple: 'bg-gradient-to-br from-purple-50 to-purple-100/50 border-purple-200 text-purple-900',
-  gray: 'bg-gradient-to-br from-gray-50 to-gray-100/50 border-gray-200 text-gray-900',
+  slate: 'bg-gradient-to-br from-slate-50 to-slate-100/50 border-slate-200 text-slate-900',
 };
 
 const trendColorStyles = {
   up: 'text-red-600',
   down: 'text-green-600',
-  neutral: 'text-gray-600',
+  neutral: 'text-slate-600',
 };
 
 const sizeStyles = {
@@ -83,12 +83,12 @@ export default function MetricCard({
     <div className={baseClasses}>
       <div className="flex items-start justify-between">
         <div className="flex-1">
-          <p className={`font-medium ${isPremium ? 'text-gray-700' : 'opacity-80'}`}>
+          <p className={`font-medium ${isPremium ? 'text-slate-700' : 'opacity-80'}`}>
             {title}
           </p>
           <p className={`font-bold mt-2 ${valueSizeStyles[size]}`}>{value}</p>
           {subtitle && (
-            <p className={`mt-1 ${isPremium ? 'text-gray-600' : 'text-sm opacity-70'}`}>
+            <p className={`mt-1 ${isPremium ? 'text-slate-600' : 'text-sm opacity-70'}`}>
               {subtitle}
             </p>
           )}
@@ -101,13 +101,13 @@ export default function MetricCard({
                 {' '}
                 {trend.direction !== 'neutral' ? Math.abs(trend.value) : ''}%
               </span>
-              <span className={isPremium ? 'text-gray-600' : 'opacity-70'}>
+              <span className={isPremium ? 'text-slate-600' : 'opacity-70'}>
                 {trend.label || 'vs last period'}
               </span>
             </div>
           )}
           {target && (
-            <div className={`mt-2 flex items-center gap-2 text-xs ${isPremium ? 'text-gray-600' : 'opacity-70'}`}>
+            <div className={`mt-2 flex items-center gap-2 text-xs ${isPremium ? 'text-slate-600' : 'opacity-70'}`}>
               <span>Target: {target.value}</span>
               {target.achieved !== undefined && (
                 <span className={target.achieved ? 'text-green-600' : 'text-yellow-600'}>

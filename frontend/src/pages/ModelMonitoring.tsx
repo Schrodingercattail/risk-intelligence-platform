@@ -18,7 +18,7 @@ const PSI_STATUS_COLORS = {
   stable: 'bg-green-100 text-green-800 border-green-200',
   warning: 'bg-yellow-100 text-yellow-800 border-yellow-200',
   drift: 'bg-red-100 text-red-800 border-red-200',
-  unknown: 'bg-gray-100 text-gray-800 border-gray-200',
+  unknown: 'bg-slate-100 text-slate-800 border-slate-200',
 };
 
 // Model health status types
@@ -45,7 +45,7 @@ const ModelHealthTooltip = () => (
             <span className="ml-1">Significant issue detected, manual investigation required.</span>
           </div>
           <div>
-            <span className="font-medium text-gray-600">Unavailable:</span>
+            <span className="font-medium text-slate-600">Unavailable:</span>
             <span className="ml-1">Not enough evaluation data available.</span>
           </div>
         </div>
@@ -197,7 +197,7 @@ export default function ModelMonitoring() {
         return { label: 'Needs Review', color: 'red', bgColor: 'bg-red-50', textColor: 'text-red-800', borderColor: 'border-red-200' };
       case 'UNAVAILABLE':
       default:
-        return { label: 'Unavailable', color: 'gray', bgColor: 'bg-gray-50', textColor: 'text-gray-800', borderColor: 'border-gray-200' };
+        return { label: 'Unavailable', color: 'slate', bgColor: 'bg-slate-50', textColor: 'text-slate-800', borderColor: 'border-slate-200' };
     }
   };
 
@@ -240,7 +240,7 @@ export default function ModelMonitoring() {
                 modelHealth.status === 'HEALTHY' ? 'bg-gradient-to-br from-blue-600 to-indigo-700' :
                 modelHealth.status === 'WARNING' ? 'bg-gradient-to-br from-yellow-500 to-orange-600' :
                 modelHealth.status === 'NEEDS_REVIEW' ? 'bg-gradient-to-br from-red-500 to-red-700' :
-                'bg-gradient-to-br from-gray-400 to-gray-600'
+                'bg-gradient-to-br from-slate-400 to-slate-600'
               }`}>
                 <span className="text-white text-2xl font-bold">AI</span>
               </div>
@@ -264,7 +264,7 @@ export default function ModelMonitoring() {
                   modelHealth.status === 'HEALTHY' ? 'bg-green-500' :
                   modelHealth.status === 'WARNING' ? 'bg-yellow-500' :
                   modelHealth.status === 'NEEDS_REVIEW' ? 'bg-red-500' :
-                  'bg-gray-500'
+                  'bg-slate-500'
                 }`}></div>
                 {healthDisplay.label}
               </div>

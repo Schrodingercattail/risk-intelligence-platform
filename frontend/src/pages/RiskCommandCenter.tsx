@@ -361,7 +361,7 @@ export default function RiskCommandCenter() {
   }));
 
   return (
-    <div className="space-y-8" style={{ backgroundColor: '#F8FAFC', minHeight: '100vh', padding: '24px' }}>
+    <div className="space-y-8">
       <div className="max-w-[1600px] mx-auto space-y-8">
         {/* ==================================== PAGE HEADER ==================================== */}
         <div>
@@ -371,7 +371,7 @@ export default function RiskCommandCenter() {
 
         {/* ==================================== SECTION 1: EXECUTIVE RISK SUMMARY ==================================== */}
         <section>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             {/* Card 1: High Risk Accounts */}
             <DataProvenanceTooltip
               metric="High Risk Accounts"

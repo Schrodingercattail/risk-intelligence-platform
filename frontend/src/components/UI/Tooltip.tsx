@@ -30,7 +30,7 @@ export default function Tooltip({ content, children, position = 'top' }: Tooltip
       {children}
       {isVisible && (
         <div className={`absolute z-50 ${positionStyles[position]} w-64`}>
-          <div className="bg-gray-900 text-white text-xs rounded p-3 shadow-lg text-left">
+          <div className="bg-slate-900 text-white text-xs rounded p-3 shadow-lg text-left">
             {content}
           </div>
         </div>

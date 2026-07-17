@@ -293,3 +293,21 @@ Remaining:
 - Connect CSV upload pipeline
 - Generate real feature statistics
 - Improve model explainability
+
+## Frontend Design System Alignment
+
+Date:
+
+Changes:
+- unified slate color palette
+- standardized cards
+- aligned spacing
+- added design-system.ts
+
+Reason:
+Improve enterprise SaaS consistency
+
+Not changed:
+- backend
+- data flow
+- product scope

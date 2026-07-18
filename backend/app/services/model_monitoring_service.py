@@ -121,20 +121,21 @@ class ModelMonitoringService:
                     "ks": float(model.ks_score) if model.ks_score else None,
                     "psi": psi_data.get("max_psi"),
                 },
-                "psi_status": psi_data.get("overall_status"),
-                "psi_features": psi_data.get("features", []),
+                "psi_status": psi_data.get("overall_status") if not psi_data.get("error") else "unknown",
+                "psi_features": psi_data.get("features", []) if not psi_data.get("error") else [],
             }
         else:
             metrics = {
                 "model_name": "LightGBM Risk Model",
                 "version": "v1.0",
+                "deployed_at": None,
                 "metrics": {
                     "auc": None,
                     "ks": None,
                     "psi": psi_data.get("max_psi"),
                 },
-                "psi_status": psi_data.get("overall_status"),
-                "psi_features": psi_data.get("features", []),
+                "psi_status": psi_data.get("overall_status") if not psi_data.get("error") else "unknown",
+                "psi_features": psi_data.get("features", []) if not psi_data.get("error") else [],
             }
 
         return metrics

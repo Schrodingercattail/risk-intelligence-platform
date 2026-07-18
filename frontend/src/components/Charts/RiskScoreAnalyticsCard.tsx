@@ -6,7 +6,6 @@
 
 interface RiskScoreStatistics {
   average: number;
-  median: number;
   threshold: number;
   maximum: number;
 }
@@ -17,7 +16,6 @@ interface RiskScoreAnalyticsCardProps {
 
 const mockStatistics: RiskScoreStatistics = {
   average: 52.3,
-  median: 48.7,
   threshold: 80.0,
   maximum: 98.2,
 };
@@ -30,7 +28,7 @@ const getScorePercentage = (score: number, maxScore = 100) => {
 export default function RiskScoreAnalyticsCard({
   statistics = mockStatistics,
 }: RiskScoreAnalyticsCardProps) {
-  const { average, median, threshold, maximum } = statistics;
+  const { average, threshold, maximum } = statistics;
 
   const metrics = [
     {
@@ -38,12 +36,7 @@ export default function RiskScoreAnalyticsCard({
       value: average,
       description: 'Mean risk score across all analyzed users',
       icon: 'μ',
-    },
-    {
-      label: 'Median Risk Score',
-      value: median,
-      description: 'Middle value of risk score distribution',
-      icon: 'M',
+      isStatistic: true,
     },
     {
       label: 'High Risk Threshold',
@@ -81,7 +74,9 @@ export default function RiskScoreAnalyticsCard({
               <span className={`text-sm font-semibold flex-shrink-0 ${
                 metric.isThreshold ? 'text-red-600' : 'text-slate-900'
               }`}>
-                {metric.value.toFixed(1)}
+                {metric.isThreshold ? Math.round(metric.value) :
+                 metric.isStatistic ? metric.value.toFixed(1) :
+                 Math.round(metric.value)}
               </span>
             </div>
             {/* Bar visualization */}

@@ -9,483 +9,262 @@ identify temporary mock values
 track future backend/API replacement points
 prevent mock data from being treated as production data
 guide future integration work
+
 1. Risk Overview Page (RiskCommandCenter.tsx)
+
 1.1 Risk Score Distribution
-Current mock location
-frontend/src/pages/RiskCommandCenter.tsx
 
-MOCK_DATA.riskDistribution
-Current mock data
-{
-  critical: 32,
-  high: 208,
-  medium: 390,
-  low: 845,
-  total: 1475
-}
-Used for
-Risk Score Distribution card
-Risk Level Distribution visualization
-Risk severity summary
-Current status
+✅ **COMPLETED** - Now using backend API (`/api/risk/overview`)
 
-Mock
+Backend fields used:
+- risk_level_composition.critical
+- risk_level_composition.high
+- risk_level_composition.medium
+- risk_level_composition.low
+- risk_level_composition.total
 
-Future source
-
-Backend risk summary API
-
-Expected fields:
-
-{
-  "critical": number,
-  "high": number,
-  "medium": number,
-  "low": number,
-  "total": number
-}
 1.2 Detection Source Analysis
-Current mock location
-frontend/src/components/Charts/DetectionSourceChart.tsx
-Current mock data
 
-Example:
+✅ **COMPLETED** - Now using backend API (`/api/risk/overview`)
 
-[
-  {
-    name: "Rule Engine",
-    value: 45
-  },
-  {
-    name: "LightGBM Model",
-    value: 32
-  },
-  {
-    name: "Graph Analysis",
-    value: 18
-  }
-]
-Used for
+Backend fields used:
+- detection_sources array with method, detected_accounts, detection_rate, color
 
-Detection source percentage bar chart
-
-Current status
-
-Mock
-
-Future source
-
-Backend detection aggregation API
-
-Expected:
-
-[
-  {
-    "source": "Rule Engine",
-    "percentage": number
-  },
-  {
-    "source": "ML Model",
-    "percentage": number
-  },
-  {
-    "source": "Graph Analysis",
-    "percentage": number
-  }
-]
 1.3 Investigation Queue
-Current mock location
-frontend/src/pages/RiskCommandCenter.tsx
-Current mock cases
 
-Example:
+✅ **COMPLETED** - Now using backend API (`/api/risk/cases`)
 
-[
- {
-   caseId:"CASE-10291",
-   userId:"user_1248",
-   riskScore:94,
-   riskLevel:"CRITICAL"
- },
- {
-   caseId:"CASE-10290",
-   userId:"user_0847",
-   riskScore:87,
-   riskLevel:"CRITICAL"
- }
-]
-Used for
-Investigation Queue table
-Case selection
-Current status
-
-Mock
-
-Future source
-
-Backend case detection API
+Backend fields used:
+- items array with case data
+- total count for pagination
 
 2. Investigation Page (Investigation.tsx)
+
 2.1 Investigation Cases
-Current mock location
-frontend/src/pages/Investigation.tsx
-Current mock fields
-{
- caseId,
- userId,
- riskScore,
- riskLevel,
- detectedSignals,
- recommendedAction
-}
-Used for
 
-Left investigation queue
+✅ **COMPLETED** - Now using backend API (`/api/risk/cases`)
 
-Current status
+Backend API: GET /api/risk/cases
 
-Mock
+Fields from backend:
+- user_id
+- risk_score
+- risk_level
+- primary_reason
+- recommended_action
+- detected_at
+- ml_score, rule_score, graph_score
+- detection_methods (computed from scores)
 
-Future source
-
-Backend:
-
-GET /api/cases
 2.2 Selected Case Detail
-Current mock data
 
-Example:
+✅ **COMPLETED** - Using backend API with full case context
 
-{
- accountAge:"47 days",
- totalVolume:"$124,830",
- created:"2025/1/15"
-}
-Used for
+Backend API: GET /api/risk/events/{user_id}
 
-Account Information card
+Fields from backend:
+- risk_score, risk_level, risk_probability
+- primary_reason, recommended_action
+- detected_at, event_type
+- ml_score, rule_score, graph_score
+- detection_methods
+- risk_factors (from RiskFactor table)
+- cluster (if applicable)
+- account_age: Computed from User.account_created_time (days since account creation)
+- total_volume: Aggregated from Trade table (SUM of price * quantity)
 
-Future source
-
-Case detail API
-
-Example:
-
-GET /api/cases/{case_id}
 2.3 Detected Risk Signals
-Current mock
 
-Example:
+✅ **COMPLETED** - Using backend API
 
-[
-"Shared Device with 3 high-risk users",
-"Abnormal Location Login",
-"Rapid Withdrawal Pattern"
-]
-Used for
+Backend API: GET /api/risk/events/{user_id}
 
-Risk signal display
-
-Future source
-
-ML feature explanation service
+Returns risk_factors array from RiskFactor table
 
 2.4 AI Explanation / Human-readable Recommendation
-Planned feature
 
-Not implemented yet.
+⏳ **PARTIAL** - Template-based generation in frontend
 
-Purpose:
+Backend API exists: POST /api/risk/explain (LLM service)
 
-Convert model output into analyst-friendly explanation.
+Current implementation:
+- Frontend generates template-based explanation from scores
+- Shows ML score, Rule score, Graph score breakdown
+- Shows analyst guidance based on recommended_action
 
-Example:
+Future enhancement:
+- Integrate with LLM explanation service for human-readable narratives
 
-Instead of:
+3. Data Pipeline Page (DataPipeline.tsx)
 
-Feature:
-device_shared_count = 5
+3.1 Data Source Cards
 
-Show:
+⏳ **PENDING** - Still using mock data
 
-This account shares the same device with multiple high-risk users,
-which significantly increases fraud probability.
+Current mock:
+- Data source names
+- Record counts
+- Update timestamps
 
 Future source:
+- Pipeline status API
+- Dataset metadata API
 
-LLM explanation service
-
-Backend:
-
-/api/cases/{id}/explanation
-3. Data Pipeline Page (DataPipeline.tsx)
-3.1 Data Source Cards
-Current mock
-
-Example:
-
-[
- {
-   name:"User Behavior Data",
-   records:12483,
-   updated:"2 min ago"
- },
- {
-   name:"Transaction Data",
-   records:48291,
-   updated:"Just now"
- }
-]
-Used for
-
-Data Sources cards
-
-Current status
-
-Mock
-
-Future source
-
-Uploaded CSV metadata
-
-Backend should provide:
-
-{
- "fileName":"",
- "recordCount":number,
- "uploadedAt":"datetime"
-}
 3.2 Pipeline Processing Steps
-Current mock
 
-Pipeline steps:
+⏳ **PENDING** - Still using mock data
 
-Data Sources
+Current mock:
+- Step names
+- Status indicators
+- Processing metrics
 
-Data Validation
+Future source:
+- GET /api/pipeline/status
 
-Feature Engineering
-
-ML Risk Scoring
-
-Graph Analysis
-
-Risk Decision Engine
-
-Current values:
-
+Expected response:
 {
- sources:4,
- records:71920,
- features:128,
- clusters:225,
- actions:2990
+  "data_sources": "PENDING" | "COMPLETED",
+  "dataset_validation": "PENDING" | "RUNNING" | "COMPLETED" | "FAILED",
+  "feature_engineering": "PENDING" | "RUNNING" | "COMPLETED" | "FAILED",
+  "ml_scoring": "PENDING" | "RUNNING" | "COMPLETED" | "FAILED",
+  "graph_analysis": "PENDING" | "RUNNING" | "COMPLETED" | "FAILED"
 }
-Used for
 
-Processing Pipeline visualization
-
-Current status
-
-Mock
-
-Future source
-
-Pipeline execution status API
-
-Expected:
-
-{
- step:"",
- status:"completed|running|pending|failed",
- metrics:{}
-}
 3.3 Upload Status
-Current behavior
 
-Upload requires:
+⏳ **PARTIAL** - Frontend validation working
 
-user.csv
-device.csv
-trades.csv
-withdrawals.csv
+Current implementation:
+- Frontend validates file selection
+- Backend API exists: POST /api/pipeline/upload
+- Backend validates all 4 required files
 
-All files required before pipeline execution.
+Status:
+- Upload validation is implemented
+- Pipeline status tracking is pending
 
-Validation rules
-
-Upload button enabled only when:
-
-all required files uploaded
-file type = CSV
-
-Future backend validation:
-
-POST /api/pipeline/upload
 4. Model Monitoring Page (ModelMonitoring.tsx)
+
 4.1 Model Metadata
-Current mock fields
-{
- modelName:"LightGBM Risk Engine",
- version:"v1.0",
- featureCount:128,
- algorithm:"LightGBM",
- trainingDate:"2026-07-01"
-}
-Classification
 
-Some fields belong to model artifact, not uploaded data.
+✅ **COMPLETED** - Now using backend API (`/api/model/monitoring`)
 
-Model-owned fields
+Fields from backend:
+- model_name: From ModelMetadata table
+- version: From ModelMetadata table
+- deployed_at: From ModelMetadata table
 
-Can come from saved model:
+Fields using defaults:
+- algorithm: "LightGBM"
+- model_type: "Gradient Boosting"
+- feature_count: 128
 
-model name
-version
-algorithm
-feature count
-training date
-
-Example:
-
-risk_model.pkl metadata
-Dataset-owned fields
-
-Should come from uploaded data:
-
-record count
-upload time
-data range
 4.2 Model Performance Metrics
-Current mock
-{
- auc:0.000,
- ks:0.000,
- psi:0.000
-}
-Used for
 
-Model performance cards
+✅ **COMPLETED** - Now using backend API (`/api/model/monitoring`)
 
-Future source
+Fields from backend:
+- auc: From ModelMetadata.auc_score
+- ks: From ModelMetadata.ks_score
+- psi: From PSI calculation
 
-Model evaluation API
+Behavior:
+- No model: Returns null, displays as "No model available"
+- Has model: Shows actual evaluation metrics
 
-Expected:
+4.3 AI Risk Drivers (Feature Importance)
 
-{
- "auc":number,
- "ks":number,
- "psi":number
-}
-4.3 AI Risk Drivers
-Current mock
+✅ **COMPLETED** - Now using backend API (`/api/model/feature-importance`)
 
-Example:
+Backend API: GET /api/model/feature-importance
 
-[
- {
-  feature:"Shared Device Risk",
-  importance:35
- },
- {
-  feature:"Coordinated Transaction",
-  importance:30
- }
-]
-Used for
+Behavior:
+- No model: Returns empty array (no fallback)
+- Has model: Returns actual feature importance from ModelMetadata
 
-Feature importance chart
-
-Future source
-
-LightGBM feature importance output
-
-Possible source:
-
-model.feature_importances_
 4.4 PSI Monitoring
-Current mock
-{
- psi:0,
- status:"Unknown"
-}
-Current limitation
 
-First upload has no comparison baseline.
+✅ **COMPLETED** - Now using backend API (`/api/model/monitoring`)
 
-Expected behavior:
+Fields from backend:
+- psi: From PSI calculation
+- psi_status: "stable" | "warning" | "drift" | "unknown"
 
-First dataset:
+Behavior:
+- No baseline: Returns "unknown" status
+- Has baseline: Shows actual PSI values
 
-PSI unavailable
-Reason:
-No previous dataset available
-
-Second dataset onwards:
-
-Compare:
-
-previous dataset
-vs
-current dataset
 4.5 Feature Drift Analysis
-Current status
 
-UI implemented.
+✅ **COMPLETED** - Now using backend API (`/api/model/monitoring`)
 
-Backend definition needed.
+Fields from backend:
+- psi_features: Array of feature PSI values
 
-Expected backend response:
+Behavior:
+- No baseline: Returns empty array
+- Has baseline: Shows feature-level drift
 
-[
- {
-  "feature":"transaction_amount",
-  "psi":0.12,
-  "status":"stable"
- },
- {
-  "feature":"device_count",
-  "psi":0.35,
-  "status":"drift"
- }
-]
-5. Files Containing Mock Data
-Frontend
-frontend/src/pages/RiskCommandCenter.tsx
+4.6 Model Training Lifecycle
 
-frontend/src/pages/Investigation.tsx
+✅ **COMPLETED** - End-to-end ML lifecycle now functional
 
-frontend/src/pages/DataPipeline.tsx
+Backend API: POST /api/pipeline/train
 
-frontend/src/pages/ModelMonitoring.tsx
+Training Process:
+- Loads features from FeatureTable (database)
+- Generates labels from cluster membership
+- Trains LightGBM model with 80/20 train-test split
+- Calculates AUC, KS, feature importance
+- Saves model artifacts to ml-models/artifacts/
+- Persists metadata to ModelMetadata table
+- Saves feature importance to FeatureImportance table
+- Generates PSI baseline distribution
 
-frontend/src/components/Charts/*.tsx
+Response includes:
+- model_version: Timestamp of training
+- metrics: {auc, ks}
+- train_size, test_size: Dataset split counts
+- positive_ratio: Proportion of risky users
+- model_id: Database ID for metadata
 
-frontend/src/types/index.ts
-6. Mock Data Replacement Priority
-High priority
+Integration:
+- After data upload: POST /api/pipeline/upload
+- Run pipeline: POST /api/pipeline/run
+- Train model: POST /api/pipeline/train
+- Monitor: GET /api/model/monitoring
 
-Replace first:
+Behavior:
+- No features: Returns FAILED status with error
+- Success: Returns COMPLETED with full metrics
 
-Risk Overview metrics
-Investigation cases
-Uploaded dataset metadata
-Pipeline execution status
-Medium priority
-Detection source analysis
-AI risk drivers
-Feature drift analysis
-Low priority
-Static model metadata
-7. Principle
+5. Summary - Mock Data Replacement Status
 
-All mock data should eventually be replaced by:
+✅ **FULLY COMPLETED:**
+- Risk Overview page (all sections)
+- Investigation page (main case data and case detail)
+- Model Monitoring page (all sections)
 
-uploaded CSV metadata
-backend database records
-ML model outputs
-pipeline execution status
-model monitoring service
+⏳ **PARTIALLY COMPLETED:**
+- Investigation page (AI explanation - template based)
+- Data Pipeline page (upload validation working)
 
-No production UI value should permanently depend on frontend hardcoded values.
+⏳ **PENDING:**
+- Data Pipeline page (data source cards)
+- Data Pipeline page (pipeline processing steps)
+
+6. Files Status Summary
+
+Frontend files mock data status:
+
+✅ **COMPLETED:**
+- RiskCommandCenter.tsx
+- Investigation.tsx
+- ModelMonitoring.tsx
+
+⏳ **PARTIAL:**
+- DataPipeline.tsx (upload validation)
+
+⏳ **PENDING:**
+- DataPipeline.tsx (visualization)

@@ -38,20 +38,20 @@ async def get_model_metrics(
             model_name=model.model_name,
             version=model.version,
             metrics={
-                "auc": float(model.auc_score) if model.auc_score else 0.0,
-                "ks": float(model.ks_score) if model.ks_score else 0.0,
-                "psi": float(model.psi_score) if model.psi_score else 0.0,
+                "auc": float(model.auc_score) if model.auc_score else None,
+                "ks": float(model.ks_score) if model.ks_score else None,
+                "psi": float(model.psi_score) if model.psi_score else None,
             },
         )
     else:
-        # Return default metrics if no model deployed
+        # Return null metrics if no model deployed
         return ModelMetricsResponse(
             model_name="LightGBM Risk Model",
             version="v1.0",
             metrics={
-                "auc": 0.86,
-                "ks": 0.42,
-                "psi": 0.08,
+                "auc": None,
+                "ks": None,
+                "psi": None,
             },
         )
 
@@ -86,15 +86,6 @@ async def get_feature_importance(
                 "rank": fi.rank,
             }
             for fi in result.scalars().all()
-        ]
-    else:
-        # Return default feature importance for demo
-        features = [
-            {"name": "Shared Device Relationships", "importance": 0.35, "rank": 1},
-            {"name": "Coordinated Trading Pattern", "importance": 0.30, "rank": 2},
-            {"name": "Linked Account Network", "importance": 0.20, "rank": 3},
-            {"name": "Trading Frequency", "importance": 0.10, "rank": 4},
-            {"name": "Withdrawal Behavior", "importance": 0.05, "rank": 5},
         ]
 
     return FeatureImportanceListResponse(features=features)

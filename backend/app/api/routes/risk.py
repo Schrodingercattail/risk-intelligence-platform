@@ -82,12 +82,13 @@ async def get_risk_overview(
     )
     high_risk_accounts += critical_result.scalar() or 0
 
-    # Suspicious clusters (fraud networks)
-    cluster_result = await db.execute(
-        select(func.count())
-        .select_from(text("account_clusters"))
+    # Fraud Networks - unique users linked to suspicious clusters
+    # Count distinct users who are members of suspicious clusters detected through network analysis
+    from app.models.database import ClusterMember
+    fraud_networks_result = await db.execute(
+        select(func.count(func.distinct(ClusterMember.user_id)))
     )
-    fraud_networks = cluster_result.scalar() or 0
+    fraud_networks = fraud_networks_result.scalar() or 0
 
     # Risk recommendations - users with AI-generated recommended actions
     # Count unique users with risk events that have recommended actions
@@ -148,13 +149,8 @@ async def get_risk_overview(
     )
     max_score = float(max_score_result.scalar() or 0.0)
 
-    # For median, use average as approximation for now
-    # In production, would use percentile_cont or similar
-    median_score = average_score
-
     risk_score_statistics = {
         "average": round(average_score, 1),
-        "median": round(median_score, 1),
         "threshold": 80.0,
         "maximum": round(max_score, 1)
     }
@@ -268,7 +264,7 @@ async def get_risk_overview(
 @router.get("/events", response_model=RiskEventListResponse)
 async def get_risk_events(
     page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
+    page_size: int = Query(20, ge=1, le=1000),
     risk_level: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
@@ -298,7 +294,9 @@ async def get_user_risk_detail(
     user_id: str,
     db: AsyncSession = Depends(get_db),
 ):
-    """Get detailed risk information for a specific user."""
+    """Get detailed risk information for a specific user, including case context."""
+    from datetime import datetime, timezone
+
     # Get latest risk event
     result = await db.execute(
         select(RiskEvent)
@@ -337,17 +335,36 @@ async def get_user_risk_detail(
             risk_score=float(cluster.risk_score),
         )
 
+    # Compute account_age from User.account_created_time
+    user_result = await db.execute(
+        select(User).where(User.user_id == user_id)
+    )
+    user = user_result.scalar_one_or_none()
+    account_age = None
+    if user and user.account_created_time:
+        account_age = (datetime.now(timezone.utc) - user.account_created_time).days
+
+    # Compute total_volume from Trade table (sum of price * quantity)
+    from app.models.database import Trade
+    volume_result = await db.execute(
+        select(func.sum(Trade.price * Trade.quantity))
+        .where(Trade.user_id == user_id)
+    )
+    total_volume = volume_result.scalar()
+
     return RiskEventDetailResponse(
         **RiskEventResponse.model_validate(risk_event).model_dump(),
         risk_factors=[RiskFactorResponse.model_validate(f) for f in factors],
         cluster=cluster_info,
+        account_age=account_age,
+        total_volume=float(total_volume) if total_volume else None,
     )
 
 
 @router.get("/cases", response_model=RiskEventListResponse)
 async def get_investigation_cases(
     page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
+    page_size: int = Query(20, ge=1, le=1000),
     risk_level: Optional[str] = Query(None, description="Filter by risk level: CRITICAL, HIGH, MEDIUM"),
     search: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),

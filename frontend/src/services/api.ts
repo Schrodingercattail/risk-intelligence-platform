@@ -176,6 +176,8 @@ export interface ClusterInfo {
 export interface RiskEventDetail extends RiskEvent {
   risk_factors: RiskFactor[];
   cluster: ClusterInfo | null;
+  account_age?: number;  // Account age in days
+  total_volume?: number;  // Total trading volume
 }
 
 export interface GraphNode {
@@ -267,6 +269,7 @@ export interface PSIFeature {
 export interface ModelMonitoringData {
   model_name: string;
   version: string;
+  deployed_at?: string;
   metrics: {
     auc: number | null;
     ks: number | null;

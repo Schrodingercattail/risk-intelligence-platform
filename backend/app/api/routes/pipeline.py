@@ -12,6 +12,7 @@ from app.models.schemas import (
     PipelineStatusResponse,
     PipelineRunRequest,
     DataUploadResponse,
+    ModelTrainingResponse,
 )
 
 router = APIRouter(prefix="/pipeline", tags=["Pipeline"])
@@ -145,16 +146,41 @@ async def run_pipeline(
     """
     Run the complete data pipeline.
 
-    Executes: Feature Engineering -> Graph Analysis -> ML Scoring
+    Executes: Feature Engineering -> Graph Analysis -> ML Scoring -> Model Training (optional)
     """
     service = PipelineService(db)
 
     result = await service.run_pipeline(
         run_full_pipeline=request.run_full_pipeline,
         generate_risk_events=request.generate_risk_events,
+        train_model=False,  # Training is separate endpoint
     )
 
     return result
+
+
+@router.post("/train", response_model=ModelTrainingResponse)
+async def train_model(
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Train LightGBM model on current database data.
+
+    This endpoint:
+    1. Loads features from FeatureTable
+    2. Generates labels from cluster membership
+    3. Trains LightGBM model
+    4. Saves model artifacts and metadata
+    5. Creates PSI baseline
+
+    Returns:
+        Training results with metrics and model info
+    """
+    service = PipelineService(db)
+
+    result = await service.train_model()
+
+    return ModelTrainingResponse(**result)
 
 
 @router.get("/dataset-info")

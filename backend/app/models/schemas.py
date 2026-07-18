@@ -5,7 +5,7 @@ These schemas define the structure of API requests and responses,
 providing validation and serialization.
 """
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Optional, List, Dict
 from datetime import datetime
 from decimal import Decimal
 
@@ -145,9 +145,11 @@ class RiskEventResponse(BaseModel):
 
 
 class RiskEventDetailResponse(RiskEventResponse):
-    """Detailed risk event response with factors and cluster."""
+    """Detailed risk event response with factors, cluster, and case context."""
     risk_factors: List[RiskFactorResponse] = []
     cluster: Optional[ClusterInfo] = None
+    account_age: Optional[int] = None  # Account age in days
+    total_volume: Optional[float] = None  # Total trading volume (sum of price * quantity)
 
 
 class RiskScoreDistributionBucket(BaseModel):
@@ -160,7 +162,6 @@ class RiskScoreDistributionBucket(BaseModel):
 class RiskScoreStatistics(BaseModel):
     """Risk score statistics for analytics."""
     average: float = 0.0
-    median: float = 0.0
     threshold: float = 80.0
     maximum: float = 0.0
 
@@ -287,6 +288,20 @@ class PipelineRunRequest(BaseModel):
     """Schema for triggering pipeline run."""
     run_full_pipeline: bool = True
     generate_risk_events: bool = True
+
+
+class ModelTrainingResponse(BaseModel):
+    """Schema for model training response."""
+    status: str
+    model_version: Optional[str] = None
+    metrics: Optional[Dict[str, float]] = None
+    train_size: Optional[int] = None
+    test_size: Optional[int] = None
+    positive_ratio: Optional[float] = None
+    feature_importance_count: Optional[int] = None
+    baseline_saved: Optional[str] = None
+    model_id: Optional[int] = None
+    error: Optional[str] = None
 
 
 # ============================================================

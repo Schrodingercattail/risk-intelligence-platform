@@ -129,7 +129,6 @@ Response:
   ],
   "risk_score_statistics": {
     "average": 52.3,
-    "median": 48.7,
     "threshold": 80.0,
     "maximum": 98.2
   },
@@ -160,9 +159,9 @@ Section 1 - Executive Risk Summary KPI Cards (in order):
    - Note: Count of unique users, NOT alerts/events
 
 3. Fraud Networks - summary.fraud_networks
-   - Definition: Suspicious clusters detected through network analysis
-   - Subtitle: "Suspicious clusters detected through network analysis"
-   - Note: Number of clusters, NOT users in networks
+   - Definition: Unique users linked to suspicious clusters detected through network analysis
+   - Subtitle: "Users linked to suspicious network clusters"
+   - Note: Count of unique users in fraud clusters (deduplicated), NOT cluster count
 
 4. Risk Recommendations - summary.risk_recommendations
    - Definition: Users with AI-generated risk actions
@@ -177,7 +176,7 @@ Row 1:
    - Shows high risk threshold marker
 
 2. Risk Score Analytics - risk_score_statistics
-   - Visual stat card with: average, median, threshold, maximum
+   - Visual stat card with: average, threshold, maximum
 
 Row 2:
 3. Risk Level Composition - risk_level_composition
@@ -372,7 +371,69 @@ Frontend displays:
 - total matching count
 - pagination controls
 
-6. Risk Trend Contract
+6. Case Detail Context Contract
+
+API:
+
+GET /api/risk/events/{user_id}
+
+Purpose:
+
+Returns detailed case context including account age and trading volume.
+
+This endpoint provides enriched case context for investigation detail view.
+
+Response:
+
+{
+  "user_id": "U001",
+  "risk_score": 87,
+  "risk_level": "HIGH",
+  "risk_probability": 0.87,
+  "primary_reason": "Unusual trading activity",
+  "recommended_action": "Review account",
+  "detected_at": "2026-07-15T10:32:00",
+  "event_type": "trading_anomaly",
+  "ml_score": 45.0,
+  "rule_score": 25.0,
+  "graph_score": 0.0,
+  "detection_methods": ["LightGBM", "Rule Engine"],
+  "risk_factors": [
+    {
+      "id": 1,
+      "factor_name": "high_frequency_trading",
+      "factor_value": 0.85,
+      "factor_description": "Trading frequency exceeds normal patterns"
+    }
+  ],
+  "cluster": {
+    "cluster_id": 42,
+    "member_count": 5,
+    "risk_score": 92.5
+  },
+  "account_age": 365,
+  "total_volume": 125000.50
+}
+
+Field Definitions:
+
+- account_age: Account age in days (computed from User.account_created_time)
+  - Returns null if account_created_time is not available
+  - Calculated as: (current_time - account_created_time) in days
+
+- total_volume: Total trading volume (sum of price * quantity from all trades)
+  - Returns null if user has no trading history
+  - Calculated as: SUM(Trade.price * Trade.quantity) WHERE user_id
+
+Frontend:
+
+Investigation page - Case Detail panel.
+
+Display format:
+- account_age: "{N} days" or "N/A" if null
+- total_volume: "${X,XXX.XX}" or "N/A" if null
+
+7. Risk Trend Contract
 
 API:
 
@@ -414,7 +475,7 @@ Frontend:
 
 Do NOT display fake line chart.
 
-7. Detection Attribution Contract
+8. Detection Attribution Contract
 
 API:
 
@@ -560,7 +621,7 @@ Color: each method has distinct color
 
 Tooltip: shows detection rate percentage
 
-8. Model Performance Contract
+9. Model Performance Contract
 
 API:
 
@@ -600,7 +661,7 @@ PSI:
 
 Lower is better
 
-9. Feature Importance Contract
+10. Feature Importance Contract
 
 API:
 
@@ -626,7 +687,7 @@ Frontend:
 
 AI Risk Drivers chart.
 
-10. Feature Drift Contract
+11. Feature Drift Contract
 
 API:
 
@@ -660,7 +721,7 @@ Frontend:
 
 Feature-Level Drift Analysis.
 
-11. Pipeline Status Contract
+12. Pipeline Status Contract
 
 API:
 
@@ -714,7 +775,7 @@ red
 
 Do not show completed before backend confirms.
 
-12. Upload Requirement Contract
+13. Upload Requirement Contract
 
 Required files:
 
@@ -744,7 +805,7 @@ All required files validated
 
 Button enabled.
 
-13. Pipeline Status Validation Strategy
+14. Pipeline Status Validation Strategy
 
 IMPORTANT: Two-Layer Validation Strategy
 
@@ -857,7 +918,7 @@ Error Response (Processing Failed):
   "detail": "Upload failed: Data validation error - users.csv contains invalid records."
 }
 
-14. Future Enterprise Integration
+15. Future Enterprise Integration
 
 Current:
 
@@ -877,7 +938,7 @@ Frontend contract should remain unchanged.
 
 Only backend ingestion layer changes.
 
-14. Current MVP Mock Replacement Plan
+16. Current MVP Mock Replacement Plan
 
 Remove frontend mocks from:
 
@@ -928,3 +989,205 @@ Pipeline Status API
 
 Phase 5:
 Model Monitoring API
+
+17. Model Lifecycle Completion
+
+Overview:
+
+The platform now demonstrates an end-to-end AI risk management workflow:
+
+CSV Upload
+→ Data Import
+→ Feature Engineering
+→ Graph Analysis
+→ Model Training
+→ Model Evaluation
+→ Metadata Persistence
+→ PSI Baseline Generation
+→ Risk Scoring
+→ Model Monitoring
+
+Model Training API:
+
+POST /api/pipeline/train
+
+Purpose:
+
+Train LightGBM model on current database data and persist model metadata.
+
+Requirements:
+- Features must be calculated (FeatureEngineeringService.run())
+- Clusters must be detected (GraphAnalysisService.detect_all_clusters())
+- Labels generated from cluster membership
+
+Training Process:
+1. Load features from FeatureTable
+2. Generate labels: risky = cluster members, normal = non-members
+3. Train/test split (80/20, stratified)
+4. Train LightGBM model
+5. Evaluate (AUC, KS, feature importance)
+6. Save model artifact to ml-models/artifacts/
+7. Save metadata to ModelMetadata table
+8. Save feature importance to FeatureImportance table
+9. Generate PSI baseline distribution
+
+Response:
+{
+  "status": "COMPLETED",
+  "model_version": "20260718_143022",
+  "metrics": {
+    "auc": 0.8567,
+    "ks": 0.4234
+  },
+  "train_size": 8000,
+  "test_size": 2000,
+  "positive_ratio": 0.15,
+  "feature_importance_count": 12,
+  "baseline_saved": "/path/to/feature_distribution.json",
+  "model_id": 42
+}
+
+Error Response:
+{
+  "status": "FAILED",
+  "error": "No feature data available. Run feature engineering first."
+}
+
+Model Monitoring API:
+
+GET /api/model/monitoring
+
+Purpose:
+
+Get complete model health metrics including AUC, KS, PSI, and feature drift.
+
+Response (with trained model):
+{
+  "model_name": "LightGBM Risk Model",
+  "version": "20260718_143022",
+  "deployed_at": "2026-07-18T14:30:22Z",
+  "metrics": {
+    "auc": 0.8567,
+    "ks": 0.4234,
+    "psi": 0.08
+  },
+  "psi_status": "stable",
+  "psi_features": [
+    {"feature": "shared_device_count", "psi": 0.05, "status": "stable"},
+    {"feature": "trade_frequency_24h", "psi": 0.12, "status": "warning"}
+  ]
+}
+
+Response (no model trained):
+{
+  "model_name": "LightGBM Risk Model",
+  "version": "v1.0",
+  "deployed_at": null,
+  "metrics": {
+    "auc": null,
+    "ks": null,
+    "psi": null
+  },
+  "psi_status": "unknown",
+  "psi_features": []
+}
+
+Key Behaviors:
+- No fallback values when model not available
+- Returns null for missing metrics
+- psi_status: "stable" | "warning" | "drift" | "unknown"
+- Frontend displays "No model available" when all metrics are null
+
+Feature Importance API:
+
+GET /api/model/feature-importance
+
+Response (with trained model):
+{
+  "features": [
+    {"name": "shared_device_count", "importance": 0.35, "rank": 1},
+    {"name": "opposite_trade_ratio", "importance": 0.28, "rank": 2},
+    {"name": "withdrawal_risk_score", "importance": 0.18, "rank": 3}
+  ]
+}
+
+Response (no model trained):
+{
+  "features": []
+}
+
+Key Behaviors:
+- No fallback demo data when model not available
+- Returns empty array when no model metadata exists
+- Frontend displays "No feature importance available"
+
+Integration Points:
+
+1. After Data Upload:
+   POST /api/pipeline/upload
+   → Import CSV files to database
+   → Return record counts
+
+2. Run Pipeline:
+   POST /api/pipeline/run
+   → Feature Engineering
+   → Graph Analysis
+   → Risk Scoring
+   → Return pipeline status
+
+3. Train Model:
+   POST /api/pipeline/train
+   → Load features from database
+   → Generate labels from clusters
+   → Train LightGBM model
+   → Save metadata and baseline
+   → Return training results
+
+4. Monitor Model:
+   GET /api/model/monitoring
+   → Return model metrics and PSI data
+
+Frontend Display:
+
+Model Health Card:
+- Shows model name, version, deployed_at
+- Displays AUC, KS, PSI metrics
+- Shows "No model available" when metrics are null
+
+Feature Drift Chart:
+- Shows PSI values per feature
+- Shows "No drift analysis available" when psi_features is empty
+- Color-coded by status (green=stable, yellow=warning, red=drift)
+
+Feature Importance Chart:
+- Shows top features by importance score
+- Shows "No feature importance available" when features array is empty
+- Displays actual trained model importance or empty state
+
+MVP Limitation - Fraud Label Generation:
+
+**Important:** The current implementation uses graph clustering for fraud label generation.
+
+Label Source:
+- Fraud labels (is_risky) are derived from graph cluster membership
+- Users detected in suspicious clusters are labeled as "risky"
+- This is done automatically during training pipeline execution
+
+Why This Approach for MVP:
+- Demonstrates complete ML lifecycle workflow
+- Shows model training, evaluation, and monitoring
+- Provides realistic feature importance rankings
+- Works end-to-end without manual labeling
+
+Production Requirement:
+For production deployment, fraud labels must come from:
+- Independent fraud investigation confirmation
+- Manual review by fraud analysts
+- External fraud intelligence sources
+- Time-separated validation to prevent overfitting
+
+Model Behavior with Current Labels:
+- Model learns patterns associated with cluster membership
+- AUC/KS metrics reflect cluster-based labeling
+- Feature importance highlights device/trading patterns in clusters
+- Suitable for pipeline demonstration, not production decision-making

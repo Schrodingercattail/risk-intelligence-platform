@@ -7,197 +7,240 @@
  * MVP: Risk investigation workspace for analyst decision support.
  * NOT a Case Management System - no workflow or status tracking.
  */
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
+import { riskApi } from '../services/api';
 
 interface InvestigationCase {
   case_id: string;
   user_id: string;
   risk_score: number;
   risk_level: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
-  account_age: string;
-  total_volume: string;
+  account_age: number | string;  // Can be number (days) or "N/A"
+  total_volume: number | string;  // Can be number or "N/A"
   risk_factors: Array<{ name: string; severity: 'critical' | 'high' | 'medium' | 'low' }>;
   recommended_action: string;
   created_at: string;
   risk_explanation: {
     summary: string;
-    contributing_factors: string[];
+    contributingFactors: string[];
     signal_analysis: string;
     analyst_guidance: string;
   };
+  detection_methods?: string[];
 }
 
-// Mock investigation cases - risk candidates from uploaded dataset
-const mockCases: InvestigationCase[] = [
-  {
-    case_id: 'CASE-10291',
-    user_id: 'user_1248',
-    risk_score: 94,
-    risk_level: 'CRITICAL',
-    account_age: '47 days',
-    total_volume: '$124,830',
-    risk_factors: [
-      { name: 'Shared Device with 3 high-risk users', severity: 'critical' },
-      { name: 'Abnormal Location Login', severity: 'high' },
-      { name: 'Rapid Withdrawal Pattern', severity: 'critical' },
-    ],
-    recommended_action: 'Freeze Withdrawal',
-    created_at: '2025-01-15T10:16:00Z',
+// Transform backend API data to InvestigationCase format
+function transformToInvestigationCase(
+  item: any,
+  idx: number
+): InvestigationCase {
+  // Generate risk factors from primary_reason
+  const riskFactors: Array<{ name: string; severity: 'critical' | 'high' | 'medium' | 'low' }> = item.primary_reason
+    ? [{ name: item.primary_reason, severity: item.risk_level === 'CRITICAL' ? 'critical' : item.risk_level === 'HIGH' ? 'high' : 'medium' }]
+    : [{ name: 'Risk signals detected', severity: 'medium' }];
+
+  // Generate risk explanation based on scores
+  const mlScore = item.ml_score || 0;
+  const ruleScore = item.rule_score || 0;
+  const graphScore = item.graph_score || 0;
+
+  let summary = `This account received a ${item.risk_level.toLowerCase()} risk score (${Math.round(item.risk_score)}/100).`;
+  const contributingFactors: string[] = [];
+
+  if (mlScore > 0) {
+    contributingFactors.push(`ML model detection with score ${Math.round(mlScore)}`);
+  }
+  if (ruleScore > 0) {
+    contributingFactors.push(`Rule engine detection with score ${Math.round(ruleScore)}`);
+  }
+  if (graphScore > 0) {
+    contributingFactors.push(`Graph network analysis with score ${Math.round(graphScore)}`);
+  }
+
+  if (contributingFactors.length === 0) {
+    contributingFactors.push('Risk signals detected through analysis');
+  }
+
+  // Generate unique case_id from user_id
+  // Extract numeric part from user_id (e.g., "U01401" -> "01401")
+  const userIdNumber = item.user_id ? item.user_id.replace(/\D/g, '') : '';
+  const caseIdNumber = userIdNumber || String(idx + 1).padStart(5, '0');
+
+  return {
+    case_id: `CASE-${caseIdNumber}`,
+    user_id: item.user_id,
+    risk_score: Math.round(item.risk_score),
+    risk_level: item.risk_level,
+    account_age: 0, // Placeholder - will be updated from detail API
+    total_volume: 0, // Placeholder - will be updated from detail API
+    risk_factors: riskFactors,
+    recommended_action: item.recommended_action || 'Review case',
+    created_at: item.detected_at || new Date().toISOString(),
+    detection_methods: item.detection_methods || [],
     risk_explanation: {
-      summary: 'This account received a critical risk score (94/100) due to multiple high-severity signals detected within a short timeframe. The combination of device-sharing with known high-risk users, unusual login location, and rapid withdrawal pattern indicates potential account compromise or fraudulent activity.',
-      contributing_factors: [
-        'Device shared with 3 accounts having risk scores >80',
-        'Login from previously unseen location',
-        '5 withdrawals completed within 8 minutes',
-        'Account age only 47 days with high transaction velocity'
-      ],
-      signal_analysis: 'The detected signals are strongly correlated with fraudulent patterns in the training dataset. Device-sharing with high-risk users has the highest feature importance (0.34), followed by rapid withdrawal velocity (0.28) and location anomaly (0.22). The confluence of these signals within a short timeframe significantly elevates risk.',
-      analyst_guidance: 'Given the critical risk level and multiple high-severity signals, immediate review is recommended. Verify account ownership, review withdrawal destinations, and consider temporary withdrawal suspension until investigation completes.'
-    },
-  },
-  {
-    case_id: 'CASE-10290',
-    user_id: 'user_0847',
-    risk_score: 87,
-    risk_level: 'CRITICAL',
-    account_age: '23 days',
-    total_volume: '$67,420',
-    risk_factors: [
-      { name: 'Account Linkage Detected', severity: 'high' },
-      { name: 'Suspicious Trading Pattern', severity: 'high' },
-    ],
-    recommended_action: 'Manual Review',
-    created_at: '2025-01-15T09:45:00Z',
-    risk_explanation: {
-      summary: 'This account received a critical risk score (87/100) primarily due to graph network analysis revealing connections to known suspicious accounts. The account linkage combined with unusual trading patterns suggests potential coordinated activity.',
-      contributing_factors: [
-        'Graph network identified 2 direct connections to flagged accounts',
-        'Trading volume 4x higher than account age peer group',
-        'Account age only 23 days with elevated activity levels',
-        'Pattern similarity to known fraud cases (78%)'
-      ],
-      signal_analysis: 'Network linkage is the primary risk driver (feature importance 0.41). Trading pattern anomaly contributed significantly (0.33). The combination of new account establishment followed by rapid high-volume activity matches historical fraud patterns.',
-      analyst_guidance: 'Review the linked accounts in the graph network to understand potential coordinated activity. Verify trading legitimacy and consider enhanced monitoring for connected accounts.'
-    },
-  },
-  {
-    case_id: 'CASE-10289',
-    user_id: 'user_1923',
-    risk_score: 82,
-    risk_level: 'HIGH',
-    account_age: '156 days',
-    total_volume: '$234,100',
-    risk_factors: [
-      { name: 'Transaction Velocity Anomaly', severity: 'medium' },
-      { name: 'New Device Login', severity: 'medium' },
-    ],
-    recommended_action: 'Enhanced Monitoring',
-    created_at: '2025-01-15T08:20:00Z',
-    risk_explanation: {
-      summary: 'This account received a high risk score (82/100) due to elevated transaction velocity combined with new device access. While individual signals are moderate, their combination warrants attention.',
-      contributing_factors: [
-        'Transaction velocity 3x higher than historical baseline',
-        'Login from previously unseen device fingerprint',
-        'Velocity spike occurred immediately after new device login',
-        'Account age 156 days - established but pattern deviation detected'
-      ],
-      signal_analysis: 'Transaction velocity anomaly is the primary contributor (feature importance 0.38). New device login on an established account is also significant (0.29). The temporal correlation between these signals increases risk weight.',
-      analyst_guidance: 'Enhanced monitoring recommended. Verify the legitimacy of the new device login. Monitor transaction patterns for the next 7-14 days for further anomalies.'
-    },
-  },
-  {
-    case_id: 'CASE-10288',
-    user_id: 'user_3456',
-    risk_score: 78,
-    risk_level: 'HIGH',
-    account_age: '89 days',
-    total_volume: '$156,780',
-    risk_factors: [
-      { name: 'Device Fingerprint Mismatch', severity: 'high' },
-      { name: 'Multiple Accounts', severity: 'medium' },
-    ],
-    recommended_action: 'Enhanced Monitoring',
-    created_at: '2025-01-15T07:30:00Z',
-    risk_explanation: {
-      summary: 'This account received a high risk score (78/100) primarily due to device fingerprint inconsistency and potential account linkage. The device change combined with multi-account indicators suggests investigation is warranted.',
-      contributing_factors: [
-        'Device fingerprint changed from previous sessions',
-        'IP address associated with 2 other accounts',
-        'Account age 89 days with moderate activity levels',
-        'Device change coincided with increased transaction volume'
-      ],
-      signal_analysis: 'Device fingerprint mismatch is the primary risk factor (feature importance 0.35). Multi-account association from same IP contributed (0.26). The timing correlation with activity increase elevates concern.',
-      analyst_guidance: 'Verify device ownership and user identity. Review the other accounts associated with the same IP address. Consider device re-verification.'
-    },
-  },
-  {
-    case_id: 'CASE-10287',
-    user_id: 'user_7890',
-    risk_score: 75,
-    risk_level: 'HIGH',
-    account_age: '34 days',
-    total_volume: '$89,450',
-    risk_factors: [
-      { name: 'Unusual Trading Pattern', severity: 'medium' },
-    ],
-    recommended_action: 'Monitor',
-    created_at: '2025-01-15T06:45:00Z',
-    risk_explanation: {
-      summary: 'This account received a high risk score (75/100) due to unusual trading patterns detected by the ML model. The pattern deviation from established behavior warrants monitoring.',
-      contributing_factors: [
-        'Trading pattern 67% similar to historical fraud cases',
-        'Account age 34 days with accelerating activity',
-        'Unusual timing of trades (outside normal hours)',
-        'Volume concentration in specific instruments'
-      ],
-      signal_analysis: 'Pattern similarity to known fraud cases is the main driver (feature importance 0.42). The combination of new account status and anomalous timing patterns increases risk weight.',
-      analyst_guidance: 'Monitor trading patterns for continued anomalies. Verify user understanding of trading risks. No immediate action required but continued monitoring advised.'
-    },
-  },
-  {
-    case_id: 'CASE-10286',
-    user_id: 'user_4567',
-    risk_score: 68,
-    risk_level: 'MEDIUM',
-    account_age: '201 days',
-    total_volume: '$312,000',
-    risk_factors: [
-      { name: 'New Device Login', severity: 'low' },
-    ],
-    recommended_action: 'Monitor',
-    created_at: '2025-01-15T05:20:00Z',
-    risk_explanation: {
-      summary: 'This account received a medium risk score (68/100) due to a new device login on an established account. While device changes are common, the established account status with significant volume warrants noting.',
-      contributing_factors: [
-        'Login from previously unseen device',
-        'Account age 201 days - established user',
-        'No other risk signals detected',
-        'Transaction volume within normal range for account age'
-      ],
-      signal_analysis: 'New device login on an established account has low risk weight (feature importance 0.15). Absence of other contributing signals keeps overall risk at medium level.',
-      analyst_guidance: 'Standard monitoring sufficient. Device change noted for context. No immediate action required.'
-    },
-  },
-];
+      summary,
+      contributingFactors: contributingFactors,
+      signal_analysis: `Risk analysis based on multiple detection methods. ML score: ${mlScore.toFixed(1)}, Rule score: ${ruleScore.toFixed(1)}, Graph score: ${graphScore.toFixed(1)}.`,
+      analyst_guidance: item.recommended_action || 'Review the risk factors and determine appropriate action based on investigation findings.'
+    }
+  };
+}
 
 export default function Investigation() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCase, setSelectedCase] = useState<InvestigationCase | null>(null);
+  const [cases, setCases] = useState<InvestigationCase[]>([]);
+  const [totalCases, setTotalCases] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const PAGE_SIZE = 50; // Load 50 cases at a time
 
-  // Sort by risk score (descending) and filter by search
-  const sortedCases = useMemo(() => {
-    return [...mockCases].sort((a, b) => b.risk_score - a.risk_score);
+  // Fetch case detail for a selected case
+  const fetchCaseDetail = async (caseItem: InvestigationCase) => {
+    try {
+      const detail = await riskApi.getUserDetail(caseItem.user_id);
+
+      // Update the selected case with detail information
+      setSelectedCase({
+        ...caseItem,
+        account_age: detail.account_age ?? 'N/A',
+        total_volume: detail.total_volume ?? 'N/A',
+      });
+    } catch (err) {
+      console.error('Failed to load case detail:', err);
+      // Keep the original case if detail fetch fails
+      setSelectedCase(caseItem);
+    }
+  };
+
+  // Handle case selection with detail fetch
+  const handleCaseSelect = (caseItem: InvestigationCase) => {
+    setSelectedCase(caseItem); // Set immediately for UI responsiveness
+    fetchCaseDetail(caseItem); // Fetch details in background
+  };
+
+  // Fetch cases from backend API
+  useEffect(() => {
+    const fetchCases = async () => {
+      try {
+        setLoading(true);
+        setError(null);
+        console.log('=== Investigation: Fetching cases from backend ===');
+
+        const response = await riskApi.getCases({ page: 1, page_size: PAGE_SIZE });
+        console.log('=== Investigation: API response ===', response);
+
+        if (!response) {
+          console.warn('=== Investigation: No response from API ===');
+          setError('Failed to load cases: No response from server');
+          setCases([]);
+          return;
+        }
+
+        const items = response.items || [];
+        const total = response.total || 0;
+        console.log('=== Investigation: Response items ===', items);
+        console.log('=== Investigation: Total count ===', total);
+        console.log('=== Investigation: Items length ===', items.length);
+
+        // Set total cases count from API
+        setTotalCases(total);
+        setCurrentPage(1);
+
+        if (items.length === 0) {
+          console.warn('=== Investigation: No items in response ===');
+          setCases([]);
+          setError(null); // No error, just no data
+          return;
+        }
+
+        const transformedCases = items.map((item, idx) => transformToInvestigationCase(item, idx));
+        console.log('=== Investigation: Transformed cases ===', transformedCases);
+        setCases(transformedCases);
+
+        // Auto-select first case if available and no case is currently selected
+        if (transformedCases.length > 0 && !selectedCase) {
+          handleCaseSelect(transformedCases[0]);
+        }
+      } catch (err) {
+        console.error('=== Investigation: Failed to load cases ===', err);
+        setError('Failed to load cases. Please upload datasets first.');
+        setCases([]);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchCases();
   }, []);
 
+  // Load more cases
+  const loadMoreCases = async () => {
+    try {
+      setLoadingMore(true);
+      const nextPage = currentPage + 1;
+      console.log('=== Investigation: Loading more cases, page ===', nextPage);
+
+      const response = await riskApi.getCases({ page: nextPage, page_size: PAGE_SIZE });
+
+      if (!response || !response.items) {
+        console.warn('=== Investigation: No response for load more ===');
+        return;
+      }
+
+      const items = response.items;
+      const transformedCases = items.map((item, idx) =>
+        transformToInvestigationCase(item, idx + (currentPage * PAGE_SIZE))
+      );
+
+      setCases(prev => [...prev, ...transformedCases]);
+      setCurrentPage(nextPage);
+    } catch (err) {
+      console.error('=== Investigation: Failed to load more cases ===', err);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
+  // Check if there are more cases to load
+  const hasMoreCases = cases.length < totalCases;
+
+  // Filter by search with smart matching
   const filteredCases = useMemo(() => {
-    if (!searchQuery) return sortedCases;
-    const query = searchQuery.toLowerCase();
-    return sortedCases.filter(
-      (c) =>
-        c.case_id.toLowerCase().includes(query) ||
-        c.user_id.toLowerCase().includes(query)
-    );
-  }, [sortedCases, searchQuery]);
+    if (!searchQuery) return cases;
+    const query = searchQuery.toLowerCase().trim();
+
+    return cases.filter((c) => {
+      const caseId = c.case_id.toLowerCase();
+      const userId = c.user_id.toLowerCase();
+
+      // Direct match with case_id or user_id
+      if (caseId === query || userId === query) {
+        return true;
+      }
+
+      // Numeric match: if searching for "01428", match "CASE-01428"
+      const isNumericQuery = /^\d+$/.test(query);
+      if (isNumericQuery) {
+        const caseIdNumber = caseId.replace('case-', '');
+        return caseIdNumber === query;
+      }
+
+      // CASE- prefix match: "case-01428" matches "CASE-01428"
+      if (query.startsWith('case-') || query.startsWith('case_')) {
+        return caseId === query;
+      }
+
+      // U prefix match: "u01428" matches "U01428"
+      if (query.startsWith('u')) {
+        return userId === query;
+      }
+
+      return false;
+    });
+  }, [cases, searchQuery]);
 
   const getRiskLevelColor = (level: string) => {
     switch (level) {
@@ -243,7 +286,7 @@ export default function Investigation() {
           <div className="flex-1">
             <input
               type="text"
-              placeholder="Search by Case ID or User ID..."
+              placeholder="Search by case number, CASE-XXXXX, or User ID..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
@@ -251,7 +294,7 @@ export default function Investigation() {
           </div>
         </div>
         <p className="text-xs text-slate-500 mt-2">
-          Search filters cases from the current uploaded dataset
+          Smart search: case number, CASE-XXXXX, or User ID (UXXXXX) all work
         </p>
       </div>
 
@@ -263,43 +306,66 @@ export default function Investigation() {
             <div className="p-4 border-b border-slate-200">
               <h2 className="text-lg font-semibold text-slate-900">Investigation Queue</h2>
               <p className="text-xs text-slate-600 mt-1">
-                {sortedCases.length} cases requiring analyst review • Sorted by risk score
+                Showing {filteredCases.length} of {totalCases} cases • Sorted by risk score
               </p>
             </div>
             <div className="divide-y divide-slate-200 max-h-[600px] overflow-y-auto">
-              {filteredCases.length === 0 ? (
+              {loading ? (
                 <div className="p-8 text-center text-slate-500 text-sm">
-                  No cases found matching "{searchQuery}"
+                  Loading investigation cases...
+                </div>
+              ) : error ? (
+                <div className="p-8 text-center text-red-500 text-sm">
+                  {error}
+                </div>
+              ) : filteredCases.length === 0 ? (
+                <div className="p-8 text-center text-slate-500 text-sm">
+                  {searchQuery ? `No cases found matching "${searchQuery}"` : 'No cases available. Upload data to generate investigation cases.'}
                 </div>
               ) : (
-                filteredCases.map((caseItem) => (
-                  <div
-                    key={caseItem.case_id}
-                    onClick={() => setSelectedCase(caseItem)}
-                    className={`p-4 cursor-pointer transition-colors ${
-                      selectedCase?.case_id === caseItem.case_id
-                        ? 'bg-blue-50 border-l-4 border-l-blue-600'
-                        : 'hover:bg-slate-50'
-                    }`}
-                  >
-                    <div className="flex items-start justify-between mb-2">
-                      <div className="flex items-center gap-2">
-                        <span className="font-semibold text-slate-900">{caseItem.case_id}</span>
-                        {caseItem.risk_level === 'CRITICAL' && <span className="text-red-500">★</span>}
+                <>
+                  {filteredCases.map((caseItem) => (
+                    <div
+                      key={caseItem.case_id}
+                      onClick={() => handleCaseSelect(caseItem)}
+                      className={`p-4 cursor-pointer transition-colors ${
+                        selectedCase?.case_id === caseItem.case_id
+                          ? 'bg-blue-50 border-l-4 border-l-blue-600'
+                          : 'hover:bg-slate-50'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          <span className="font-semibold text-slate-900">{caseItem.case_id}</span>
+                          {caseItem.risk_level === 'CRITICAL' && <span className="text-red-500">★</span>}
+                        </div>
+                        <span className={`px-2 py-0.5 text-xs font-medium rounded border ${getRiskLevelColor(caseItem.risk_level)}`}>
+                          {caseItem.risk_level}
+                        </span>
                       </div>
-                      <span className={`px-2 py-0.5 text-xs font-medium rounded border ${getRiskLevelColor(caseItem.risk_level)}`}>
-                        {caseItem.risk_level}
-                      </span>
+                      <div className="flex items-center justify-between text-sm mb-2">
+                        <span className="text-slate-600">{caseItem.user_id}</span>
+                        <span className="font-bold text-slate-900">{caseItem.risk_score}/100</span>
+                      </div>
+                      <div className="text-xs text-slate-500">
+                        {caseItem.recommended_action}
+                      </div>
                     </div>
-                    <div className="flex items-center justify-between text-sm mb-2">
-                      <span className="text-slate-600">{caseItem.user_id}</span>
-                      <span className="font-bold text-slate-900">{caseItem.risk_score}/100</span>
+                  ))}
+
+                  {/* Load More Button */}
+                  {!searchQuery && hasMoreCases && (
+                    <div className="p-3 border-t border-slate-200">
+                      <button
+                        onClick={loadMoreCases}
+                        disabled={loadingMore}
+                        className="w-full py-2 px-4 text-sm font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {loadingMore ? 'Loading...' : `Load More (${totalCases - filteredCases.length} remaining)`}
+                      </button>
                     </div>
-                    <div className="text-xs text-slate-500">
-                      {caseItem.recommended_action}
-                    </div>
-                  </div>
-                ))
+                  )}
+                </>
               )}
             </div>
           </div>
@@ -346,13 +412,42 @@ export default function Investigation() {
                       <span className="text-slate-600">Risk Score</span>
                       <span className="font-medium text-slate-900">{selectedCase.risk_score}/100</span>
                     </div>
+                    {selectedCase.detection_methods && selectedCase.detection_methods.length > 0 && (
+                      <div className="flex justify-between text-sm">
+                        <span className="text-slate-600">Detection Methods</span>
+                        <div className="flex gap-1">
+                          {selectedCase.detection_methods.map(method => {
+                            const isLightGBM = method === 'LightGBM';
+                            const isGraph = method === 'Graph Network';
+                            return (
+                            <span key={method} className={`px-2 py-0.5 text-xs font-medium rounded ${
+                              isLightGBM
+                                ? 'bg-blue-100 text-blue-700 border border-blue-200'
+                                : isGraph
+                                ? 'bg-cyan-100 text-cyan-700 border border-cyan-200'
+                                : 'bg-slate-100 text-slate-700 border border-slate-200'
+                            }`}>
+                              {isLightGBM ? 'ML' : isGraph ? 'Graph' : 'Rule'}
+                            </span>
+                          )})}
+                        </div>
+                      </div>
+                    )}
                     <div className="flex justify-between text-sm">
                       <span className="text-slate-600">Account Age</span>
-                      <span className="font-medium text-slate-900">{selectedCase.account_age}</span>
+                      <span className="font-medium text-slate-900">
+                        {typeof selectedCase.account_age === 'number'
+                          ? `${selectedCase.account_age} days`
+                          : selectedCase.account_age}
+                      </span>
                     </div>
                     <div className="flex justify-between text-sm">
                       <span className="text-slate-600">Total Volume</span>
-                      <span className="font-medium text-slate-900">{selectedCase.total_volume}</span>
+                      <span className="font-medium text-slate-900">
+                        {typeof selectedCase.total_volume === 'number'
+                          ? `$${selectedCase.total_volume.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                          : selectedCase.total_volume}
+                      </span>
                     </div>
                   </div>
                 </div>
@@ -417,7 +512,7 @@ export default function Investigation() {
                 <div className="mb-4">
                   <h4 className="text-xs font-semibold text-slate-700 mb-2">Key Contributing Factors</h4>
                   <ul className="space-y-1">
-                    {selectedCase.risk_explanation.contributing_factors.map((factor, index) => (
+                    {selectedCase.risk_explanation.contributingFactors.map((factor, index) => (
                       <li key={index} className="text-xs text-slate-600 flex items-start gap-2">
                         <span className="text-blue-600 font-medium">{index + 1}.</span>
                         <span>{factor}</span>

@@ -274,20 +274,24 @@ export default function RiskCommandCenter() {
 
   // Transform backend case data to frontend format
   const transformedCases = useMemo(() => {
-    const cases = investigationCases.map((item, idx) => ({
-      case_id: `CASE-${String(idx + 1).padStart(5, '0')}`,
-      user_id: item.user_id,
-      risk_score: Math.round(item.risk_score),
-      risk_level: item.risk_level as RiskLevel,
-      detection_methods: item.detection_methods || [], // Use backend-generated detection methods
-      risk_factors: item.primary_reason ? [item.primary_reason] : ['Risk signals detected'],
-      recommended_action: item.recommended_action || 'Review case',
-    }));
+    const cases = investigationCases.map((item, idx) => {
+      // Generate unique case_id using global index (accounting for pagination)
+      const globalIndex = (currentPage - 1) * PAGE_SIZE + idx + 1;
+      return {
+        case_id: `CASE-${String(globalIndex).padStart(5, '0')}`,
+        user_id: item.user_id,
+        risk_score: Math.round(item.risk_score),
+        risk_level: item.risk_level as RiskLevel,
+        detection_methods: item.detection_methods || [], // Use backend-generated detection methods
+        risk_factors: item.primary_reason ? [item.primary_reason] : ['Risk signals detected'],
+        recommended_action: item.recommended_action || 'Review case',
+      };
+    });
     console.log('=== Transformed Cases ===');
     console.log('Transformed cases:', cases);
     console.log('First transformed case:', cases[0]);
     return cases;
-  }, [investigationCases]);
+  }, [investigationCases, currentPage]);
 
   // Filter cases - now handled by backend API
   const filteredCases = transformedCases;
@@ -445,7 +449,7 @@ export default function RiskCommandCenter() {
               <div className="flex-1 flex items-end">
                 <p className="text-4xl font-bold text-slate-900">{summary.fraud_networks}</p>
               </div>
-              <p className="text-sm text-slate-500 mt-2 h-5">Suspicious clusters detected through network analysis</p>
+              <p className="text-sm text-slate-500 mt-2 h-5">Users linked to suspicious network clusters</p>
             </KPICard>
 
             {/* Card 4: Risk Recommendations */}

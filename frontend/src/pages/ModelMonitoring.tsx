@@ -93,14 +93,10 @@ const FeatureDriftTooltip = () => (
   </UITooltip>
 );
 
-// Mock model metadata - TODO: Replace with backend API
-// These are model training metadata, separate from uploaded dataset metadata
-const mockModelMetadata = {
-  model_name: 'LightGBM Risk Engine',
-  version: 'v1.0',
+// Model metadata defaults for fields not provided by backend
+const DEFAULT_MODEL_METADATA = {
   algorithm: 'LightGBM',
   model_type: 'Gradient Boosting',
-  training_date: '2026-07-01',
   feature_count: 128,
 };
 
@@ -254,10 +250,10 @@ export default function ModelMonitoring() {
               </div>
               <div>
                 <h2 className="text-xl font-semibold text-slate-900">
-                  {mockModelMetadata.model_name}
+                  {metrics.model_name || 'AI Risk Model'}
                 </h2>
                 <p className="text-sm text-slate-600 mt-1">
-                  Version {mockModelMetadata.version} • {mockModelMetadata.feature_count} features • {mockModelMetadata.algorithm}
+                  Version {metrics.version || 'v1.0'} • {DEFAULT_MODEL_METADATA.feature_count} features • {DEFAULT_MODEL_METADATA.algorithm}
                 </p>
               </div>
             </div>
@@ -542,11 +538,11 @@ export default function ModelMonitoring() {
             <div className="space-y-2">
               <div>
                 <span className="text-xs text-slate-500">Model Name</span>
-                <p className="text-sm font-medium text-slate-900">{mockModelMetadata.model_name}</p>
+                <p className="text-sm font-medium text-slate-900">{metrics.model_name || 'LightGBM Risk Model'}</p>
               </div>
               <div>
                 <span className="text-xs text-slate-500">Version</span>
-                <p className="text-sm font-medium text-slate-900">{mockModelMetadata.version}</p>
+                <p className="text-sm font-medium text-slate-900">{metrics.version || 'v1.0'}</p>
               </div>
             </div>
           </div>
@@ -557,14 +553,12 @@ export default function ModelMonitoring() {
             <div className="space-y-2">
               <div>
                 <span className="text-xs text-slate-500">Algorithm</span>
-                <p className="text-sm font-medium text-slate-900">{mockModelMetadata.algorithm}</p>
+                <p className="text-sm font-medium text-slate-900">{DEFAULT_MODEL_METADATA.algorithm}</p>
               </div>
-              {mockModelMetadata.model_type && (
-                <div>
-                  <span className="text-xs text-slate-500">Model Type</span>
-                  <p className="text-sm font-medium text-slate-900">{mockModelMetadata.model_type}</p>
-                </div>
-              )}
+              <div>
+                <span className="text-xs text-slate-500">Model Type</span>
+                <p className="text-sm font-medium text-slate-900">{DEFAULT_MODEL_METADATA.model_type}</p>
+              </div>
             </div>
           </div>
 
@@ -573,12 +567,14 @@ export default function ModelMonitoring() {
             <p className="text-xs text-slate-500 uppercase tracking-wider">Training Configuration</p>
             <div className="space-y-2">
               <div>
-                <span className="text-xs text-slate-500">Training Date</span>
-                <p className="text-sm font-medium text-slate-900">{mockModelMetadata.training_date}</p>
+                <span className="text-xs text-slate-500">Deployed Date</span>
+                <p className="text-sm font-medium text-slate-900">
+                  {metrics.deployed_at ? new Date(metrics.deployed_at).toLocaleDateString() : 'N/A'}
+                </p>
               </div>
               <div>
                 <span className="text-xs text-slate-500">Feature Count</span>
-                <p className="text-sm font-medium text-slate-900">{mockModelMetadata.feature_count} features</p>
+                <p className="text-sm font-medium text-slate-900">{DEFAULT_MODEL_METADATA.feature_count} features</p>
               </div>
             </div>
           </div>

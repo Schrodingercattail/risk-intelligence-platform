@@ -4,20 +4,21 @@
  * Batch CSV upload and risk analysis pipeline monitoring interface.
  * This is a batch processing system, not a real-time platform.
  */
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Button } from '../components/UI';
+import { pipelineApi, PipelineStatus } from '../services/api';
 
 // Required CSV datasets
 const REQUIRED_DATASETS = [
   { key: 'users', label: 'User Data', icon: '👤', description: 'User accounts and profiles' },
   { key: 'devices', label: 'Device Data', icon: '📱', description: 'Device fingerprints' },
-  { key: 'transactions', label: 'Transaction Data', icon: '💳', description: 'Trade and transaction records' },
+  { key: 'trades', label: 'Transaction Data', icon: '💳', description: 'Trade and transaction records' },
   { key: 'withdrawals', label: 'Withdrawal Data', icon: '🔔', description: 'Withdrawal requests' },
 ] as const;
 
 // Pipeline stages - from dataset upload to risk decision
 const PIPELINE_STAGES = [
-  { id: 'data_sources', name: 'Data Sources', description: 'Uploaded CSV datasets', icon: '📊' },
+  { id: 'data_sources', name: 'Data Sources', description: 'Upload CSV datasets', icon: '📊' },
   { id: 'validation', name: 'Data Validation', description: 'Quality checks and normalization', icon: '✅' },
   { id: 'features', name: 'Feature Engineering', description: 'Extract risk features from data', icon: '⚙️' },
   { id: 'scoring', name: 'ML Risk Scoring', description: 'LightGBM model predictions', icon: '🧠' },
@@ -43,6 +44,24 @@ interface PipelineState {
   };
 }
 
+// Map backend pipeline status to frontend stages
+const mapBackendStatusToFrontend = (
+  backendStatus: PipelineStatus & { data_sources?: string }
+): Record<string, 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED'> => {
+  const toStatus = (s?: string): 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' => {
+    if (s === 'PENDING' || s === 'RUNNING' || s === 'COMPLETED' || s === 'FAILED') return s;
+    return 'PENDING';
+  };
+  return {
+    data_sources: toStatus(backendStatus.data_sources),
+    validation: toStatus(backendStatus.dataset_validation),
+    features: toStatus(backendStatus.feature_engineering),
+    scoring: toStatus(backendStatus.ml_scoring),
+    graph: toStatus(backendStatus.graph_analysis),
+    decision: toStatus(backendStatus.ml_scoring) === 'COMPLETED' ? 'COMPLETED' : 'PENDING',
+  };
+};
+
 export default function DataPipeline() {
   const [uploadedDatasets, setUploadedDatasets] = useState<Record<string, UploadedDataset>>({});
   const [files, setFiles] = useState<Record<string, File>>({});
@@ -52,6 +71,31 @@ export default function DataPipeline() {
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Load pipeline status on component mount
+  useEffect(() => {
+    loadPipelineStatus();
+  }, []);
+
+  const loadPipelineStatus = async () => {
+    try {
+      const status = await pipelineApi.getStatus();
+      const frontendStages = mapBackendStatusToFrontend(status);
+      setPipelineState({
+        currentStage: '',
+        stages: frontendStages,
+      });
+
+      // If pipeline has completed stages, show results
+      if (status.ml_scoring === 'COMPLETED' || status.graph_analysis === 'COMPLETED') {
+        // For now, we'll need to fetch results from another endpoint or use cached data
+        // This will be populated when the pipeline run API returns results
+      }
+    } catch (err) {
+      console.error('Failed to load pipeline status:', err);
+      // Keep default pending state on error - don't crash the component
+    }
+  };
 
   // Check if all required files are uploaded and valid
   const allFilesUploaded = REQUIRED_DATASETS.every(d => files[d.key]);
@@ -89,35 +133,35 @@ export default function DataPipeline() {
       setLoading(true);
       setError(null);
 
-      // TODO: Replace with actual API call
-      // const result = await pipelineApi.uploadDatasets(files);
-      // setUploadedDatasets(result.datasets);
+      // Call real backend API
+      const result = await pipelineApi.uploadData({
+        users: files.users,
+        devices: files.devices,
+        trades: files.trades,
+        withdrawals: files.withdrawals,
+      });
 
-      // Mock successful upload
+      // Update uploaded datasets with server response
       const now = new Date().toISOString();
       setUploadedDatasets(
-        REQUIRED_DATASETS.reduce((acc, ds) => ({
-          ...acc,
-          [ds.key]: {
-            name: files[ds.key]!.name,
-            fileSize: files[ds.key]!.size,
-            uploadedAt: now,
-          },
-        }), {})
+        REQUIRED_DATASETS.reduce((acc, ds) => {
+          const file = files[ds.key];
+          const recordCount = result.records_imported[ds.key];
+          return {
+            ...acc,
+            [ds.key]: {
+              name: file?.name || 'Uploaded',
+              fileSize: file?.size,
+              uploadedAt: now,
+              records: recordCount,
+            },
+          };
+        }, {})
       );
 
-      // Set initial pipeline state
-      setPipelineState({
-        currentStage: 'data_sources',
-        stages: {
-          data_sources: 'COMPLETED',
-          validation: 'PENDING',
-          features: 'PENDING',
-          scoring: 'PENDING',
-          graph: 'PENDING',
-          decision: 'PENDING',
-        },
-      });
+      // Reload pipeline status to get latest state
+      // This will properly set Data Sources to COMPLETED only if all files are uploaded
+      await loadPipelineStatus();
     } catch (err: any) {
       setError(err.message || 'Upload failed');
     } finally {
@@ -132,41 +176,80 @@ export default function DataPipeline() {
       setLoading(true);
       setError(null);
 
-      // TODO: Replace with actual API call
-      // await pipelineApi.runPipeline();
-      // Poll for status updates
+      // Call real backend API to run pipeline
+      const result = await pipelineApi.runPipeline({
+        run_full_pipeline: true,
+        generate_risk_events: true,
+      });
 
-      // Mock pipeline execution
-      const stages = ['validation', 'features', 'scoring', 'graph', 'decision'];
+      // Update pipeline state based on backend response
+      // The backend returns steps with their statuses
+      const updatedStages: Record<string, 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED'> = {
+        data_sources: result.steps?.data_sources || 'PENDING',
+        validation: 'PENDING',
+        features: 'PENDING',
+        scoring: 'PENDING',
+        graph: 'PENDING',
+        decision: 'PENDING',
+      };
 
-      for (const stageId of stages) {
-        await new Promise(resolve => setTimeout(resolve, 1000)); // Simulate processing
-        setPipelineState(prev => ({
-          currentStage: stageId,
-          stages: { ...prev.stages, [stageId]: 'RUNNING' },
-        }));
+      // Process backend response steps
+      if (result.steps) {
+        if (result.steps.dataset_validation === 'COMPLETED') {
+          updatedStages.validation = 'COMPLETED';
+        } else if (result.steps.dataset_validation === 'RUNNING') {
+          updatedStages.validation = 'RUNNING';
+        } else if (result.steps.dataset_validation === 'FAILED') {
+          updatedStages.validation = 'FAILED';
+        }
 
-        await new Promise(resolve => setTimeout(resolve, 1000)); // Simulate processing
-        setPipelineState(prev => ({
-          currentStage: stageId,
-          stages: { ...prev.stages, [stageId]: 'COMPLETED' },
-        }));
+        if (result.steps.feature_engineering === 'COMPLETED') {
+          updatedStages.features = 'COMPLETED';
+        } else if (result.steps.feature_engineering === 'RUNNING') {
+          updatedStages.features = 'RUNNING';
+        } else if (result.steps.feature_engineering === 'FAILED') {
+          updatedStages.features = 'FAILED';
+        }
+
+        if (result.steps.ml_scoring === 'COMPLETED') {
+          updatedStages.scoring = 'COMPLETED';
+        } else if (result.steps.ml_scoring === 'RUNNING') {
+          updatedStages.scoring = 'RUNNING';
+        } else if (result.steps.ml_scoring === 'FAILED') {
+          updatedStages.scoring = 'FAILED';
+        }
+
+        if (result.steps.graph_analysis === 'COMPLETED') {
+          updatedStages.graph = 'COMPLETED';
+        } else if (result.steps.graph_analysis === 'RUNNING') {
+          updatedStages.graph = 'RUNNING';
+        } else if (result.steps.graph_analysis === 'FAILED') {
+          updatedStages.graph = 'FAILED';
+        }
+
+        // Decision engine depends on ML scoring completion
+        if (result.steps.ml_scoring === 'COMPLETED') {
+          updatedStages.decision = 'COMPLETED';
+        }
       }
 
-      // Set final results
-      setPipelineState(prev => ({
-        ...prev,
+      setPipelineState({
         currentStage: '',
-        results: {
-          totalRecords: 71920,
-          highRiskCount: 598,
-          fraudNetworks: 225,
-          generatedAt: new Date().toISOString(),
-        },
-      }));
+        stages: updatedStages,
+        results: result.final_counts ? {
+          totalRecords: result.final_counts.total_records,
+          highRiskCount: result.final_counts.high_risk_accounts,
+          fraudNetworks: result.final_counts.suspicious_clusters,
+          generatedAt: result.completed_at || new Date().toISOString(),
+        } : undefined,
+      });
+
+      // Reload pipeline status to get latest state
+      await loadPipelineStatus();
+
     } catch (err: any) {
       setError(err.message || 'Pipeline execution failed');
-      // Set failed stage
+      // Set failed stage based on error
       setPipelineState(prev => ({
         ...prev,
         stages: { ...prev.stages, [prev.currentStage]: 'FAILED' },

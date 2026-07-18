@@ -168,6 +168,14 @@ export default function ModelMonitoring() {
     } catch (error) {
       console.error('Failed to load model data:', error);
       setModelHealth({ status: 'UNAVAILABLE', reason: 'Failed to load model data' });
+      // Ensure component still renders even on error
+      setMetrics({
+        model_name: 'LightGBM Risk Engine',
+        version: 'v1.0',
+        metrics: { auc: null, ks: null, psi: null },
+        psi_status: 'unknown',
+        psi_features: [],
+      });
     } finally {
       setLoading(false);
     }

@@ -38,8 +38,44 @@ async def upload_data(
     """
     Upload CSV data files.
 
-    All files are optional - upload whatever data you have available.
+    All 4 required datasets must be provided:
+    - users.csv
+    - devices.csv
+    - trades.csv
+    - withdrawals.csv
+
+    Rejects incomplete uploads with meaningful error response.
     """
+    # Validate that all required files are provided
+    required_files = {
+        'users': users,
+        'devices': devices,
+        'trades': trades,
+        'withdrawals': withdrawals
+    }
+
+    missing_files = [name for name, file in required_files.items() if file is None]
+
+    if missing_files:
+        return DataUploadResponse(
+            message=f"Upload failed: Missing required datasets. Please provide all 4 files: users.csv, devices.csv, trades.csv, withdrawals.csv. Missing: {', '.join(missing_files)}",
+            files_processed=[],
+            records_imported={}
+        )
+
+    # Validate file extensions
+    invalid_files = []
+    for name, file in required_files.items():
+        if file and not file.filename.lower().endswith('.csv'):
+            invalid_files.append(f"{name}.{file.filename}")
+
+    if invalid_files:
+        return DataUploadResponse(
+            message=f"Upload failed: Invalid file format. All files must be CSV format. Invalid files: {', '.join(invalid_files)}",
+            files_processed=[],
+            records_imported={}
+        )
+
     files_uploaded = []
     import_counts = {}
 
@@ -119,3 +155,61 @@ async def run_pipeline(
     )
 
     return result
+
+
+@router.get("/dataset-info")
+async def get_dataset_info(
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get information about currently uploaded datasets.
+
+    Returns metadata about the source, processing method, and record counts.
+    """
+    from sqlalchemy import select, func
+    from app.models.models import User, Device, Trade, WithdrawalRequest
+
+    # Get record counts for each table
+    user_count = await db.scalar(select(func.count()).select_from(User))
+    device_count = await db.scalar(select(func.count()).select_from(Device))
+    trade_count = await db.scalar(select(func.count()).select_from(Trade))
+    withdrawal_count = await db.scalar(select(func.count()).select_from(WithdrawalRequest))
+
+    # Get the most recent data import timestamp if available
+    # This would typically come from a data_import_log table
+    # For now, we'll return null if no data exists
+    generated_at = None
+    if user_count > 0 or device_count > 0 or trade_count > 0 or withdrawal_count > 0:
+        # Get most recent created_at from any table as proxy
+        from sqlalchemy import or_
+        most_recent = await db.execute(
+            select(
+                func.greatest(
+                    func.coalesce(func.max(User.created_at), None),
+                    func.coalesce(func.max(Device.created_at), None),
+                    func.coalesce(func.max(Trade.timestamp), None),
+                    func.coalesce(func.max(WithdrawalRequest.created_at), None)
+                )
+            ).where(
+                or_(
+                    User.id.isnot(None),
+                    Device.id.isnot(None),
+                    Trade.id.isnot(None),
+                    WithdrawalRequest.id.isnot(None)
+                )
+            )
+        )
+        generated_at = most_recent.scalar_one()
+
+    return {
+        "source": "Uploaded Dataset",
+        "processing_method": "Risk Analytics Pipeline",
+        "update_method": "Manual Upload",
+        "generated_at": generated_at.isoformat() if generated_at else None,
+        "records_count": {
+            "users": user_count or 0,
+            "devices": device_count or 0,
+            "trades": trade_count or 0,
+            "withdrawals": withdrawal_count or 0,
+        }
+    }

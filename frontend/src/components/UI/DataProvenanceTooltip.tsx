@@ -1,30 +1,22 @@
 /**
- * DataProvenanceTooltip Component
+ * SimpleMetricTooltip Component
  *
- * Enterprise-style tooltip showing data source, definition, and metadata.
- * MVP-appropriate: reflects CSV upload workflow instead of fake production infrastructure.
+ * Simplified tooltip showing only metric name and definition.
+ * Provides concise explanations for Risk Intelligence Overview cards.
  */
 import { useState } from 'react';
 
-interface DataProvenanceTooltipProps {
+interface SimpleMetricTooltipProps {
   children: React.ReactNode;
   metric: string;
   definition: string;
-  dataSource: string;
-  processingMethod: string;
-  updateMethod: string;
-  generated?: string;
 }
 
-export default function DataProvenanceTooltip({
+export default function SimpleMetricTooltip({
   children,
   metric,
   definition,
-  dataSource,
-  processingMethod,
-  updateMethod,
-  generated,
-}: DataProvenanceTooltipProps) {
+}: SimpleMetricTooltipProps) {
   const [isOpen, setIsOpen] = useState(false);
 
   return (
@@ -32,53 +24,17 @@ export default function DataProvenanceTooltip({
       <div
         onMouseEnter={() => setIsOpen(true)}
         onMouseLeave={() => setIsOpen(false)}
-        className="cursor-help"
       >
         {children}
       </div>
 
       {isOpen && (
         <div className="absolute z-50 w-80 p-4 bg-white rounded-lg shadow-lg border border-slate-200 text-sm">
-          <div className="space-y-3">
+          <div className="space-y-2">
             {/* Metric Name */}
-            <div>
-              <p className="font-semibold text-slate-900">{metric}</p>
-              <p className="text-slate-600 mt-1">{definition}</p>
-            </div>
-
-            {/* Data Source */}
-            <div className="flex items-center justify-between py-2 border-t border-slate-100">
-              <span className="text-slate-500">Data Source</span>
-              <span className="font-medium text-slate-900">{dataSource}</span>
-            </div>
-
-            {/* Processing Method */}
-            <div className="flex items-center justify-between py-2 border-t border-slate-100">
-              <span className="text-slate-500">Processing</span>
-              <span className="font-medium text-slate-900">{processingMethod}</span>
-            </div>
-
-            {/* Update Method */}
-            <div className="flex items-center justify-between py-2 border-t border-slate-100">
-              <span className="text-slate-500">Update Method</span>
-              <span className="font-medium text-slate-900">{updateMethod}</span>
-            </div>
-
-            {/* Generated */}
-            {generated && (
-              <div className="flex items-center justify-between py-2 border-t border-slate-100">
-                <span className="text-slate-500">Generated</span>
-                <span className="font-medium text-slate-900">{generated}</span>
-              </div>
-            )}
-          </div>
-
-          {/* Data pipeline indicator */}
-          <div className="mt-3 pt-3 border-t border-slate-100">
-            <div className="flex items-center gap-2 text-xs text-slate-500">
-              <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
-              <span>Analysis from uploaded datasets via Risk Analytics Pipeline</span>
-            </div>
+            <p className="font-semibold text-slate-900">{metric}</p>
+            {/* Definition */}
+            <p className="text-slate-600">{definition}</p>
           </div>
         </div>
       )}

@@ -20,7 +20,7 @@ class Settings(BaseSettings):
 
     # API
     API_PREFIX: str = "/api"
-    CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://frontend:3000"]
+    CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:3001", "http://frontend:3000"]
 
     # Model Paths
     MODEL_PATH: str = "./ml-models/artifacts"
@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     # Risk Thresholds
     HIGH_RISK_THRESHOLD: float = 0.8
     MEDIUM_RISK_THRESHOLD: float = 0.5
+
+    # Detection Attribution Thresholds
+    # Methods with scores >= these thresholds are considered to have contributed meaningful risk signals
+    DETECTION_ML_THRESHOLD: float = 10.0      # LightGBM score >= 10 considered meaningful
+    DETECTION_RULE_THRESHOLD: float = 15.0    # Rule score >= 15 considered meaningful
+    DETECTION_GRAPH_THRESHOLD: float = 10.0  # Graph score >= 10 considered meaningful
 
     # Coordinated Trading Detection
     COORDINATED_TRADE_TIME_WINDOW_SECONDS: int = 30

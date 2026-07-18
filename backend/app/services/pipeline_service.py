@@ -45,7 +45,15 @@ class PipelineService:
         """
         # In a real implementation, this would query a pipeline_runs table
         # For now, return placeholder status
+        # Check if we have imported data to determine data_sources status
+        from sqlalchemy import select, func
+        from app.models.models import User
+
+        user_count = await self.db.scalar(select(func.count()).select_from(User))
+        data_sources_status = PipelineStatus.COMPLETED.value if user_count > 0 else PipelineStatus.PENDING.value
+
         return {
+            "data_sources": data_sources_status,
             "dataset_validation": PipelineStatus.PENDING.value,
             "feature_engineering": PipelineStatus.PENDING.value,
             "ml_scoring": PipelineStatus.PENDING.value,

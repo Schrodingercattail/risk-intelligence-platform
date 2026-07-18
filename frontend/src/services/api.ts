@@ -44,6 +44,14 @@ export const api = {
 // API endpoints
 export const riskApi = {
   getOverview: () => api.get<RiskOverview>('/api/risk/overview'),
+  getCases: (params?: { page?: number; page_size?: number; risk_level?: string }) => {
+    const queryParams: Record<string, any> = {};
+    if (params?.page) queryParams.page = params.page;
+    if (params?.page_size) queryParams.page_size = params.page_size;
+    if (params?.risk_level) queryParams.risk_level = params.risk_level;
+    const query = new URLSearchParams(queryParams).toString();
+    return api.get<RiskEventList>(`/api/risk/cases${query ? `?${query}` : ''}`);
+  },
   getEvents: (params?: { page?: number; page_size?: number; risk_level?: string }) => {
     const query = new URLSearchParams(params as any).toString();
     return api.get<RiskEventList>(`/api/risk/events${query ? `?${query}` : ''}`);
@@ -95,10 +103,41 @@ export const modelApi = {
 
 // Type definitions
 export interface RiskOverview {
-  high_risk_accounts: number;
-  suspicious_clusters: number;
-  pending_review_cases: number;
-  withdrawal_freeze_recommendations: number;
+  // Executive Risk Summary
+  summary: {
+    analyzed_users: number;
+    high_risk_accounts: number;
+    fraud_networks: number;
+    risk_recommendations: number;
+  };
+  // Risk score distribution (histogram buckets)
+  risk_score_distribution: Array<{
+    range: string;
+    count: number;
+    percentage: number;
+  }>;
+  // Risk score statistics
+  risk_score_statistics: {
+    average: number;
+    median: number;
+    threshold: number;
+    maximum: number;
+  };
+  // Risk level composition
+  risk_level_composition: {
+    critical: number;
+    high: number;
+    medium: number;
+    low: number;
+    total: number;
+  };
+  // Detection source analysis
+  detection_sources: Array<{
+    method: string;
+    detected_accounts: number;
+    detection_rate: number;
+    color: string;
+  }>;
 }
 
 export interface RiskEvent {
@@ -113,6 +152,7 @@ export interface RiskEvent {
   ml_score: number | null;
   rule_score: number | null;
   graph_score: number | null;
+  detection_methods: string[];
 }
 
 export interface RiskEventList {

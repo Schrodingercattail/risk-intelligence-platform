@@ -138,6 +138,7 @@ class RiskEventResponse(BaseModel):
     ml_score: Optional[float] = None
     rule_score: Optional[float] = None
     graph_score: Optional[float] = None
+    detection_methods: List[str] = []
 
     class Config:
         from_attributes = True
@@ -149,12 +150,58 @@ class RiskEventDetailResponse(RiskEventResponse):
     cluster: Optional[ClusterInfo] = None
 
 
+class RiskScoreDistributionBucket(BaseModel):
+    """Risk score distribution bucket for histogram."""
+    range: str  # e.g., "0-20", "20-40", etc.
+    count: int = 0
+    percentage: float = 0.0
+
+
+class RiskScoreStatistics(BaseModel):
+    """Risk score statistics for analytics."""
+    average: float = 0.0
+    median: float = 0.0
+    threshold: float = 80.0
+    maximum: float = 0.0
+
+
+class RiskLevelComposition(BaseModel):
+    """Risk level composition data."""
+    critical: int = 0
+    high: int = 0
+    medium: int = 0
+    low: int = 0
+    total: int = 0
+
+
+class DetectionSourceData(BaseModel):
+    """Detection source analysis data showing detection coverage rate."""
+    method: str  # Detection method name
+    detected_accounts: int  # Number of high-risk accounts detected by this method
+    detection_rate: float  # Percentage of high-risk accounts detected (0-100)
+    color: str = "#3b82f6"
+
+
+class ExecutiveSummary(BaseModel):
+    """Executive risk summary KPIs."""
+    analyzed_users: int = 0
+    high_risk_accounts: int = 0
+    fraud_networks: int = 0
+    risk_recommendations: int = 0
+
+
 class RiskOverviewResponse(BaseModel):
     """Schema for risk overview dashboard."""
-    high_risk_accounts: int = 0
-    suspicious_clusters: int = 0
-    pending_review_cases: int = 0
-    withdrawal_freeze_recommendations: int = 0
+    # Executive Risk Summary
+    summary: ExecutiveSummary
+    # Risk score distribution (histogram buckets)
+    risk_score_distribution: List[RiskScoreDistributionBucket] = []
+    # Risk score statistics
+    risk_score_statistics: RiskScoreStatistics = None
+    # Risk level composition
+    risk_level_composition: RiskLevelComposition = None
+    # Detection source analysis
+    detection_sources: List[DetectionSourceData] = []
 
 
 class RiskEventListResponse(BaseModel):

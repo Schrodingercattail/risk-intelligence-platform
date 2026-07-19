@@ -1156,3 +1156,629 @@ Model Behavior with Current Labels:
 Acknowledgment:
 This limitation is documented for transparency. The platform successfully
 demonstrates the AI risk management workflow, which is the MVP goal.
+
+
+---
+
+# Risk Evidence Explainability Decision
+
+Date: 2026-07-19
+
+Problem:
+
+Investigation workflow only shows model outputs (risk scores, detection methods)
+but does not explain WHY an account is risky.
+
+Current Investigation page displays:
+- Risk score (0-100)
+- Risk level (LOW/MEDIUM/HIGH/CRITICAL)
+- Detection methods (LightGBM, Rule Engine, Graph Network)
+- Component scores (ML, Rule, Graph)
+- Recommended action
+
+Missing:
+- What transactions triggered the risk?
+- What network connections exist?
+- What rules were triggered?
+- What features contributed to the score?
+
+Analyst feedback:
+"I see the risk score is 85, but I don't know WHY.
+What transactions did this user make?
+Who are they connected to?
+What rules did they violate?"
+
+Decision:
+
+Add Risk Evidence Explainability API to support investigation workflow.
+
+This is a READ-ONLY evidence aggregation feature.
+Does NOT modify risk scoring logic.
+Does NOT perform new detection.
+Only aggregates existing database evidence for explainability.
+
+Implementation:
+
+New API Endpoint:
+GET /api/risk/cases/{user_id}/evidence
+
+Evidence Categories:
+
+1. Transaction Evidence
+- Top 3-5 suspicious trades by value
+- Shows: transaction ID, symbol, side, amount, risk reason
+- Source: trades table
+
+2. Withdrawal Evidence
+- Top 3-5 withdrawals by amount
+- Shows: withdrawal ID, asset, amount, destination address
+- Highlights: New addresses (higher risk)
+- Source: withdrawals table
+
+3. Network Evidence
+- Cluster membership information
+- Shows: cluster ID, member count, cluster risk score
+- Shows: Related accounts, shared devices
+- Source: cluster_members, account_clusters tables
+
+4. Risk Factor Evidence
+- Detailed factors from latest risk event
+- Shows: factor name, value, description, severity
+- Source: risk_factors table
+
+5. Feature Evidence
+- ML feature values that contributed to score
+- Shows: shared_device_count, trade_frequency_24h, etc.
+- Source: feature_table
+
+6. Rule Evidence
+- Triggered rules derived from feature values
+- Shows: rule name, severity, description
+- Source: Derived using same logic as RiskScoringService
+
+Frontend Integration:
+
+Investigation page - Case Detail panel:
+New "Risk Evidence" section displaying:
+- Transaction Signals
+- Withdrawal Signals
+- Network Signals
+- Rule Signals
+- Risk Drivers
+
+Design Principles:
+- Match existing UI style
+- Investigator-focused, not data dump
+- Clear visual hierarchy
+- Contextual explanations
+
+Architecture Compliance:
+
+✅ DOES NOT modify existing risk scoring logic
+✅ DOES NOT modify LightGBM model prediction
+✅ DOES NOT modify risk level thresholds
+✅ DOES NOT introduce artificial demo logic
+✅ READ-ONLY explanation from existing risk events
+✅ Follows existing API contract design principles
+
+Product Impact:
+
+Before: Investigation workflow showed "what" (risk score)
+After: Investigation workflow shows "why" (evidence behind the score)
+
+This completes the investigation narrative:
+1. See risk score in queue
+2. Select case for investigation
+3. See evidence explaining WHY the account is risky
+4. Take appropriate action
+
+Use Case Example:
+
+Before:
+"I see user U01406 has risk score 80.27 (HIGH).
+I should investigate this case."
+
+After:
+"I see user U01406 has risk score 80.27 (HIGH).
+They are part of a 24-member fraud cluster (Cluster_device_sharing_6).
+They made a $385,605 BTC sell transaction.
+They are connected to 23 other accounts through shared devices.
+Multiple rules were triggered: large linked account network.
+I should investigate this case immediately."
+
+Technical Implementation Summary:
+
+Files Modified:
+1. backend/app/services/evidence_service.py (NEW)
+2. backend/app/models/schemas.py (added RiskEvidenceResponse)
+3. backend/app/api/routes/risk.py (added evidence endpoint)
+4. frontend/src/services/api.ts (added getCaseEvidence method)
+5. frontend/src/pages/Investigation.tsx (added Risk Evidence section)
+6. DATA_CONTRACT.md (added section 18)
+7. MVP_PRODUCT_REFINEMENT_LOG.md (this entry)
+
+Data Flow:
+1. User selects case in Investigation Queue
+2. Frontend calls GET /api/risk/cases/{user_id}/evidence
+3. EvidenceService aggregates data from existing tables
+4. Returns evidence package (transactions, network, rules, features)
+5. Frontend displays evidence in Case Detail panel
+
+No changes to:
+- Risk scoring logic (RiskScoringService)
+- ML model inference (MLInferenceService)
+- Graph analysis (GraphAnalysisService)
+- Feature engineering (FeatureEngineeringService)
+- Rule thresholds or detection logic
+
+Validation:
+
+Evidence data is 100% derived from existing database:
+- Transaction evidence from trades table
+- Withdrawal evidence from withdrawals table
+- Network evidence from cluster_members, account_clusters
+- Risk factor evidence from risk_factors table
+- Feature evidence from feature_table
+- Rule evidence derived from feature values
+
+No artificial or mock data generated.
+
+Future Enhancements (Out of MVP Scope):
+
+- Evidence timeline visualization
+- Related account investigation workflow
+- Evidence export for case reporting
+- Custom evidence rules configuration
+- Evidence-based case routing
+- Historical evidence comparison
+
+---
+
+# Network Signals Explainability Enhancement
+
+Date: 2026-07-19
+
+Problem:
+
+Current Investigation workflow Network Signals only showed aggregated information:
+
+- "Suspicious network relationship detected"
+- Connected Accounts: 6
+- Shared device count
+
+This was insufficient for fraud investigators because they could not understand:
+- Which accounts are connected?
+- Why are they connected?
+- What entity created the relationship?
+- Which relationship is the strongest evidence?
+
+Decision:
+
+Enhance Network Signals from summary-level to actionable investigation evidence.
+
+This is a READ-ONLY explainability enhancement - does NOT modify:
+- Risk scoring logic
+- ML model inference
+- Graph detection algorithm
+- Clustering logic
+- Any existing detection behavior
+
+Implementation:
+
+Backend Changes:
+
+1. evidence_service.py - Added new method:
+   - `get_network_signals(user_id, limit)` - Returns entity-level relationship evidence
+   - For each related account, provides:
+     - Relationship type (shared_device, shared_ip)
+     - Evidence entities (device_fingerprints, shared_ips)
+     - Related account's risk level and score
+   - Sorts by risk score (highest first) for investigation priority
+
+2. risk.py - Added new API endpoint:
+   - `GET /api/risk/cases/{user_id}/network-signals?limit=5`
+   - Returns NetworkSignalsResponse with connected account details
+
+3. schemas.py - Added new schemas:
+   - `ConnectedAccountSignal` - Single connected account with relationship details
+   - `NetworkSignalsResponse` - Container for connected accounts list
+
+Frontend Changes:
+
+1. api.ts - Updated types and API:
+   - Added `ConnectedAccountSignal` interface
+   - Added `NetworkSignals` interface
+   - Added `getNetworkSignals(userId, limit)` method
+
+2. Investigation.tsx - Enhanced Network Signals display:
+   - Added state for network_signals and loadingNetworkSignals
+   - Added expandable account relationships UI
+   - Each account shows:
+     - User ID
+     - Relationship type (Shared Device Fingerprint, Shared IP Address)
+     - Evidence entity (Device ID, IP Address)
+     - Risk level badge
+     - Risk score
+   - Sorted by risk score (highest first)
+   - Empty state: "No suspicious network relationships detected."
+
+Supported Relationship Types (MVP):
+
+1. Shared Device Fingerprint
+   - Multiple accounts using the same device
+   - Evidence: device_id from devices table
+
+2. Shared IP Address
+   - Multiple accounts accessing from the same IP address
+   - Evidence: ip_address from devices table
+
+NOT Implemented (out of MVP scope):
+- Email similarity
+- Address similarity
+- Behavioral similarity
+- Graph embedding similarity
+
+Data Sources (all existing, no new data):
+- cluster_members table - Related accounts in same cluster
+- devices table - Shared devices and IPs
+- risk_events table - Related account risk scores
+
+UI Example:
+
+Before:
+```
+Connected Accounts: 6
+```
+
+After:
+```
+▼ U10234  |  HIGH Risk  |  82/100
+  Shared Device Fingerprint
+  DEVICE_88921
+
+▼ U10987  |  MEDIUM Risk  |  65/100
+  Shared IP Address
+  192.168.1.100
+```
+
+Documentation Updates:
+
+1. DATA_CONTRACT.md
+   - Added section "19. Network Signals Explainability"
+   - Documented API contract, field definitions, data sources
+   - Documented supported relationship types
+   - Documented frontend usage and UI structure
+
+2. MOCK_DATA_INVENTORY.md
+   - Marked Network Signals as backend-generated
+   - No frontend hardcoded values
+
+Validation Checklist:
+
+✅ Risk scoring unchanged
+✅ Graph clustering unchanged
+✅ Existing detection_methods API unchanged
+✅ Investigation Queue still works
+✅ Case Detail displays detailed Network Signals
+✅ API response contains explainable network relationship data
+
+Product Impact:
+
+Before: Analyst sees "network detected risk" but doesn't know why
+After: Analyst sees specific relationships explaining the risk
+
+This completes the investigation narrative:
+1. See risk score in queue
+2. Select case for investigation
+3. See evidence explaining WHY the account is risky (including network relationships)
+4. Take appropriate action
+
+Use Case Example:
+
+Before:
+"I see user U01406 is part of a 24-member fraud cluster.
+I should investigate this case."
+
+After:
+"I see user U01406 is connected to U10234 through shared device DEVICE_88921.
+U10234 has HIGH risk (82/100).
+They are also connected to U10987 through IP 192.168.1.100.
+These are strong indicators of account takeover or fraud ring.
+I should investigate this case immediately."
+
+Technical Implementation Summary:
+
+Files Modified:
+1. backend/app/services/evidence_service.py (added get_network_signals method)
+2. backend/app/api/routes/risk.py (added network-signals endpoint)
+3. backend/app/models/schemas.py (added ConnectedAccountSignal, NetworkSignalsResponse)
+4. frontend/src/services/api.ts (added types and getNetworkSignals method)
+5. frontend/src/pages/Investigation.tsx (enhanced Network Signals display)
+6. DATA_CONTRACT.md (added section 19)
+7. MVP_PRODUCT_REFINEMENT_LOG.md (this entry)
+
+No changes to:
+- Risk scoring logic (RiskScoringService)
+- ML model inference (MLInferenceService)
+- Graph analysis (GraphAnalysisService)
+- Feature engineering (FeatureEngineeringService)
+- Rule thresholds or detection logic
+- Any database schema
+
+Data Flow:
+1. User selects case in Investigation Queue
+2. Frontend calls GET /api/risk/cases/{user_id}/network-signals
+3. EvidenceService aggregates relationship data from existing tables
+4. Returns network signals with account-level detail
+5. Frontend displays expandable account relationships
+
+All data is 100% derived from existing database tables.
+No artificial or mock data generated.
+
+---
+
+# Evidence Load More Functionality
+
+Date: 2026-07-19
+
+Decision:
+
+Add Load More functionality for Transaction Signals and Network Signals to:
+- Improve page performance by reducing initial render load
+- Prioritize high-risk evidence (top 3) for quick investigation
+- Allow analysts to load additional evidence as needed
+
+Implementation:
+
+Frontend Changes (Investigation.tsx):
+
+1. New state variables:
+   - `displayedTransactionCount`: Controls how many transactions to display (default: 3)
+   - `displayedNetworkCount`: Controls how many network accounts to display (default: 3)
+
+2. Load more functions:
+   - `loadMoreTransactions()`: Increases displayedTransactionCount by 3
+   - `loadMoreNetworkSignals()`: Increases displayedNetworkCount by 3, up to total available
+
+3. Display logic:
+   - Transaction Signals: `.slice(0, displayedTransactionCount)`
+   - Network Signals: `.slice(0, displayedNetworkCount)`
+
+4. Reset on case change:
+   - `handleCaseSelect()` resets both counts to 3 when selecting a new case
+
+Backend Behavior:
+
+Transaction Evidence:
+- Already returns all suspicious transactions sorted by value (highest first)
+- Frontend displays top 3 by default
+
+Network Signals:
+- Backend already sorts by risk_score descending (highest risk first)
+- Frontend displays top 3 by default
+
+UI Behavior:
+
+Transaction Signals:
+- Default: Shows top 3 transactions
+- If more than 3: Shows "Load More (X more transactions)" button
+- Each click loads 3 more transactions
+- Shows "Showing top X" in header
+
+Network Signals:
+- Default: Shows top 3 riskiest connections
+- If more than 3: Shows "Load More (X more accounts)" button
+- Each click loads 3 more accounts
+- Shows "Showing top 3 riskiest connections" in header
+
+Files Modified:
+1. frontend/src/pages/Investigation.tsx (added Load More state and functions)
+2. DATA_CONTRACT.md (updated Network Signals section with Load More behavior)
+3. MOCK_DATA_INVENTORY.md (updated Risk Evidence section status)
+4. MVP_PRODUCT_REFINEMENT_LOG.md (this entry)
+
+No backend changes required - sorting already implemented correctly.
+
+Product Impact:
+
+Before: All evidence loaded at once (potential performance issue with large datasets)
+After: Progressive loading prioritizes highest-risk evidence, improves performance
+
+Analysts can:
+- Quickly see top 3 riskiest transactions
+- Quickly see top 3 riskiest network connections
+- Load more evidence as needed for deeper investigation
+
+No changes to:
+- Risk scoring logic (RiskScoringService)
+- ML model inference (MLInferenceService)
+- Graph analysis (GraphAnalysisService)
+- Feature engineering (FeatureEngineeringService)
+- Rule thresholds or detection logic
+- Any database schema
+
+Data Flow:
+1. User selects case in Investigation Queue
+2. Frontend calls GET /api/risk/cases/{user_id}/network-signals
+3. EvidenceService aggregates relationship data from existing tables
+4. Returns network signals with account-level detail
+5. Frontend displays expandable account relationships
+
+All data is 100% derived from existing database tables.
+No artificial or mock data generated.
+
+---
+
+# Risk Signals Display Refinement
+
+Date: 2026-07-19
+
+Issue:
+
+"Risk Signals" information was displayed in multiple locations, creating redundancy and visual clutter:
+
+1. Risk Command Center - Risk Investigation Queue table had a "Risk Signals" column showing factor text
+2. Investigation page - Case Detail panel had a standalone "Risk Signals" section
+
+This created inconsistent display patterns and duplicated information now better served by the Risk Evidence section.
+
+Decision:
+
+Remove "Risk Signals" from both locations to:
+
+1. Reduce visual clutter in Investigation Queue table
+2. Streamline Investigation page case detail panel
+3. Avoid redundancy with new Risk Evidence explainability feature
+4. Maintain consistent information architecture
+
+Changes Made:
+
+Risk Command Center (RiskCommandCenter.tsx):
+- Removed "Risk Signals" column from Investigation Queue table
+- Removed `risk_factors` from tableColumns array
+- Removed risk_factors data mapping from tableData
+- Cleaned up unused risk_factors property from transformedCases
+
+Investigation page (Investigation.tsx):
+- Removed "Risk Signals" section from Case Detail panel
+- This was a standalone card showing risk factors with severity badges
+
+Result:
+
+Risk Investigation Queue table now displays:
+- Case ID
+- User ID
+- Risk Score
+- Risk Level
+- Detection (detection methods badge)
+- Recommended Action
+
+Investigation page Case Detail panel now displays:
+- Case Header (case info, risk score)
+- Risk Profile (account age, volume, detection methods)
+- Recommended Action
+- AI Risk Explanation
+- Risk Evidence (transaction, network, rule, feature evidence)
+
+Risk signals information is now available through:
+1. Detection Methods badge (shows ML/Rule/Graph attribution)
+2. Risk Evidence section (detailed transaction, network, rule evidence)
+3. AI Risk Explanation (summary and contributing factors)
+
+Data Contract Updates (DATA_CONTRACT.md):
+- Updated Investigation Queue Contract to reflect removed column
+- Added note about Risk Evidence section as alternative source
+- Updated response example to use "items" instead of "cases"
+- Removed risk_factors from table columns documentation
+
+Product Impact:
+
+Before: Multiple locations showed overlapping risk signal information
+After: Consolidated, streamlined display with clear information hierarchy
+
+The Risk Evidence section provides more detailed and actionable evidence than the previous "Risk Signals" display, making this a net improvement for investigation workflow efficiency.
+---
+
+# Model Metadata Refinement
+
+Date: 2026-07-19
+
+Issue:
+
+Model Monitoring page Model Metadata section was displaying hardcoded values for algorithm, model_type, and feature_dimension instead of using actual model metadata from the backend API.
+
+Found in:
+- DEFAULT_MODEL_METADATA constant with hardcoded values (algorithm: 'LightGBM', model_type: 'Gradient Boosting', feature_dimension: 14)
+- Frontend displaying these defaults regardless of actual trained model metadata
+- No backend storage of these values
+
+Root Cause:
+
+The ModelMetadata database table only stored model_name, version, and performance metrics (auc, ks, psi) but not algorithm, model_type, or feature_count.
+The frontend used DEFAULT_MODEL_METADATA as a fallback for these missing fields.
+
+Solution:
+
+Implemented end-to-end model metadata storage and retrieval:
+
+Backend Changes:
+1. database.py - Added new columns to ModelMetadata table:
+   - algorithm: String(50) - e.g., "LightGBM"
+   - model_type: String(50) - e.g., "Gradient Boosting"
+   - feature_count: Integer - Number of features used in training
+
+2. train_risk_model.py - Updated to save new metadata fields:
+   - Set algorithm="LightGBM"
+   - Set model_type="Gradient Boosting"
+   - Set feature_count=len(feature_importance)
+
+3. pipeline_service.py - Updated train_model() method:
+   - Save algorithm, model_type, feature_count when creating ModelMetadata record
+
+4. model_monitoring_service.py - Updated get_current_model_metrics():
+   - Return algorithm, model_type, feature_count in API response
+   - Handle backward compatibility with hasattr checks for existing models
+
+5. Created migration script (migrations/add_model_metadata_fields.py):
+   - Add new columns to existing databases
+   - Supports upgrade and downgrade operations
+
+Frontend Changes:
+1. api.ts - Updated ModelMonitoringData interface:
+   - Added algorithm?: string | null
+   - Added model_type?: string | null
+   - Added feature_count?: number | null
+
+2. ModelMonitoring.tsx - Removed hardcoded defaults:
+   - Removed DEFAULT_MODEL_METADATA constant entirely
+   - Updated all displays to use metrics.algorithm, metrics.model_type, metrics.feature_count
+   - Shows "N/A" when fields are null (no model trained)
+
+Data Contract Updates (DATA_CONTRACT.md):
+- Updated Model Monitoring API response examples
+- Added algorithm, model_type, feature_count to response documentation
+- Updated null handling documentation
+
+Result:
+- Model metadata now reflects actual trained model information
+- Algorithm name comes from database (e.g., "LightGBM")
+- Model type comes from database (e.g., "Gradient Boosting")
+- Feature count is the actual number of features used in training
+- Displays "N/A" when no model is available (instead of fake values)
+- Future models with different algorithms will display correctly
+
+Product Impact:
+
+Before: Platform displayed hardcoded model metadata that didn't reflect actual trained models
+After: Platform displays real model metadata from database, enabling accurate model tracking
+
+Technical Implementation Summary:
+
+Files Modified:
+1. backend/app/models/database.py (added algorithm, model_type, feature_count columns)
+2. backend/app/migrations/add_model_metadata_fields.py (NEW - migration script)
+3. ml-models/training/train_risk_model.py (save new fields during training)
+4. backend/app/services/pipeline_service.py (save new fields during pipeline training)
+5. backend/app/services/model_monitoring_service.py (return new fields in API)
+6. frontend/src/services/api.ts (updated interface)
+7. frontend/src/pages/ModelMonitoring.tsx (removed DEFAULT_MODEL_METADATA)
+8. DATA_CONTRACT.md (updated API contract documentation)
+9. MVP_PRODUCT_REFINEMENT_LOG.md (this entry)
+
+No changes to:
+- Risk scoring logic (RiskScoringService)
+- ML model inference (MLInferenceService)
+- Graph analysis (GraphAnalysisService)
+- Feature engineering (FeatureEngineeringService)
+- Any existing detection behavior
+
+Validation:
+- New models trained will save algorithm, model_type, feature_count
+- API returns these fields in monitoring endpoint
+- Frontend displays real metadata instead of hardcoded values
+- Backward compatible with existing models (returns null for missing fields)
+
+Future Enhancements:
+- Add more model metadata fields (training_data_size, hyperparameters, etc.)
+- Support multiple algorithms (XGBoost, Random Forest, etc.)
+- Model comparison feature (compare metrics across versions)

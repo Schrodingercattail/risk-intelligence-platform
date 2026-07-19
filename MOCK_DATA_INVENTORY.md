@@ -81,7 +81,49 @@ Backend API: GET /api/risk/events/{user_id}
 
 Returns risk_factors array from RiskFactor table
 
-2.4 AI Explanation / Human-readable Recommendation
+2.4 Risk Evidence (Transaction, Network, Rule, Feature)
+
+✅ **COMPLETED** - Using backend API
+
+Backend API: GET /api/risk/cases/{user_id}/evidence
+
+Transaction Evidence:
+- Backend generated from trades table
+- Top transactions by value (price * quantity)
+- Shows transaction_id, symbol, side, value, risk_reason
+- Default display: top 3, with Load More button
+
+Network Evidence (Summary):
+- Backend generated from cluster_members and account_clusters tables
+- Shows cluster_id, cluster_name, detection_type, member_count, cluster_risk_score
+- Related accounts count and shared devices list
+
+Network Signals (Detailed Relationships):
+✅ **COMPLETED** - Using backend API
+
+Backend API: GET /api/risk/cases/{user_id}/network-signals
+
+- Backend generated from cluster_members, devices, and risk_events tables
+- Shows entity-level relationship evidence for investigation
+- Each connected account includes:
+  - user_id
+  - relationship_type (shared_device, shared_ip)
+  - device_fingerprints (shared device IDs)
+  - shared_ips (shared IP addresses)
+  - risk_level (LOW/MEDIUM/HIGH/CRITICAL/UNKNOWN)
+  - risk_score (0-100)
+- Sorted by risk_score descending (highest risk first)
+- Default display: top 3 riskiest connections, with Load More button
+
+Rule Evidence:
+- Backend derived from feature values using same logic as RiskScoringService
+- Shows triggered rules with rule_name, severity, description
+
+Feature Evidence:
+- Backend generated from feature_table
+- Shows ML feature values (shared_device_count, trade_frequency_24h, etc.)
+
+2.5 AI Explanation / Human-readable Recommendation
 
 ⏳ **PARTIAL** - Template-based generation in frontend
 
@@ -150,15 +192,20 @@ Status:
 
 ✅ **COMPLETED** - Now using backend API (`/api/model/monitoring`)
 
-Fields from backend:
+All fields from backend:
 - model_name: From ModelMetadata table
 - version: From ModelMetadata table
+- algorithm: From ModelMetadata table (e.g., "LightGBM")
+- model_type: From ModelMetadata table (e.g., "Gradient Boosting")
+- feature_count: From ModelMetadata table (actual number of features used)
 - deployed_at: From ModelMetadata table
 
-Fields using defaults:
-- algorithm: "LightGBM"
-- model_type: "Gradient Boosting"
-- feature_count: 128
+Behavior:
+- No model: Returns null for all fields, displays as "N/A"
+- Has model: Shows actual model metadata from database
+- New columns added to ModelMetadata table: algorithm, model_type, feature_count
+- Training pipeline saves these fields automatically
+- Migration script available for existing databases
 
 4.2 Model Performance Metrics
 
@@ -243,7 +290,7 @@ Behavior:
 
 ✅ **FULLY COMPLETED:**
 - Risk Overview page (all sections)
-- Investigation page (main case data and case detail)
+- Investigation page (main case data, case detail, risk evidence)
 - Model Monitoring page (all sections)
 
 ⏳ **PARTIALLY COMPLETED:**
@@ -260,7 +307,7 @@ Frontend files mock data status:
 
 ✅ **COMPLETED:**
 - RiskCommandCenter.tsx
-- Investigation.tsx
+- Investigation.tsx (including Risk Evidence, Network Signals, Transaction Signals)
 - ModelMonitoring.tsx
 
 ⏳ **PARTIAL:**
@@ -268,3 +315,41 @@ Frontend files mock data status:
 
 ⏳ **PENDING:**
 - DataPipeline.tsx (visualization)
+
+7. Risk Evidence Data Sources
+
+✅ **FULLY COMPLETED:**
+
+Transaction Evidence:
+- Source: trades table
+- API: GET /api/risk/cases/{user_id}/evidence
+- Display: Top 3 by default, with Load More button
+- Sort: By value (price * quantity) descending
+
+Network Evidence (Summary):
+- Source: cluster_members, account_clusters tables
+- API: GET /api/risk/cases/{user_id}/evidence
+- Display: Always shown if cluster exists
+- Shows: Cluster info, member count, related accounts count
+
+Network Signals (Detailed):
+- Source: cluster_members, devices, risk_events tables
+- API: GET /api/risk/cases/{user_id}/network-signals
+- Display: Top 3 riskiest by default, with Load More button
+- Sort: By risk_score descending (highest risk first)
+- Shows: Entity-level relationships with evidence
+
+Rule Evidence:
+- Source: Derived from feature values
+- API: GET /api/risk/cases/{user_id}/evidence
+- Display: All triggered rules
+- Shows: Rule name, severity, description
+
+Feature Evidence:
+- Source: feature_table
+- API: GET /api/risk/cases/{user_id}/evidence
+- Display: All 12 features in Risk Drivers section
+- Shows: Feature values with icons and labels
+
+All evidence data is backend-generated from actual database tables.
+No frontend hardcoded values for evidence.

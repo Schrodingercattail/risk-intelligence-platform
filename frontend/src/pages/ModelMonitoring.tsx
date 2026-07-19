@@ -93,12 +93,32 @@ const FeatureDriftTooltip = () => (
   </UITooltip>
 );
 
-// Model metadata defaults for fields not provided by backend
-const DEFAULT_MODEL_METADATA = {
-  algorithm: 'LightGBM',
-  model_type: 'Gradient Boosting',
-  feature_count: 128,
-};
+// Tooltip for Feature Dimension
+const FeatureDimensionTooltip = () => (
+  <UITooltip
+    position="top"
+    content={
+      <div className="text-sm max-w-xs">
+        <p className="font-semibold mb-1">Feature Dimension</p>
+        <p className="text-xs">
+          Number of engineered risk features used as model inputs during training.
+          Current feature set includes: device patterns, trading behavior, account characteristics,
+          and network relationships.
+        </p>
+      </div>
+    }
+  >
+    <button className="text-slate-400 hover:text-slate-600">
+      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+        <path
+          fillRule="evenodd"
+          d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z"
+          clipRule="evenodd"
+        />
+      </svg>
+    </button>
+  </UITooltip>
+);
 
 export default function ModelMonitoring() {
   const [metrics, setMetrics] = useState<ModelMonitoringData>({
@@ -253,7 +273,7 @@ export default function ModelMonitoring() {
                   {metrics.model_name || 'AI Risk Model'}
                 </h2>
                 <p className="text-sm text-slate-600 mt-1">
-                  Version {metrics.version || 'v1.0'} • {DEFAULT_MODEL_METADATA.feature_count} features • {DEFAULT_MODEL_METADATA.algorithm}
+                  Version {metrics.version || 'v1.0'} • {metrics.feature_count || 'N/A'} risk features • {metrics.algorithm || 'LightGBM'}
                 </p>
               </div>
             </div>
@@ -553,11 +573,11 @@ export default function ModelMonitoring() {
             <div className="space-y-2">
               <div>
                 <span className="text-xs text-slate-500">Algorithm</span>
-                <p className="text-sm font-medium text-slate-900">{DEFAULT_MODEL_METADATA.algorithm}</p>
+                <p className="text-sm font-medium text-slate-900">{metrics.algorithm || 'N/A'}</p>
               </div>
               <div>
                 <span className="text-xs text-slate-500">Model Type</span>
-                <p className="text-sm font-medium text-slate-900">{DEFAULT_MODEL_METADATA.model_type}</p>
+                <p className="text-sm font-medium text-slate-900">{metrics.model_type || 'N/A'}</p>
               </div>
             </div>
           </div>
@@ -567,14 +587,23 @@ export default function ModelMonitoring() {
             <p className="text-xs text-slate-500 uppercase tracking-wider">Training Configuration</p>
             <div className="space-y-2">
               <div>
-                <span className="text-xs text-slate-500">Deployed Date</span>
+                <span className="text-xs text-slate-500">Training Date</span>
                 <p className="text-sm font-medium text-slate-900">
-                  {metrics.deployed_at ? new Date(metrics.deployed_at).toLocaleDateString() : 'N/A'}
+                  {metrics.deployed_at ? new Date(metrics.deployed_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'N/A'}
                 </p>
               </div>
               <div>
-                <span className="text-xs text-slate-500">Feature Count</span>
-                <p className="text-sm font-medium text-slate-900">{DEFAULT_MODEL_METADATA.feature_count} features</p>
+                <span className="text-xs text-slate-500">Deployed Date</span>
+                <p className="text-sm font-medium text-slate-900">
+                  {metrics.deployed_at ? new Date(metrics.deployed_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'N/A'}
+                </p>
+              </div>
+              <div className="flex items-center gap-1">
+                <span className="text-xs text-slate-500">Feature Dimension</span>
+                <FeatureDimensionTooltip />
+                <p className="text-sm font-medium text-slate-900">
+                  {metrics.feature_count || 'N/A'} risk features
+                </p>
               </div>
             </div>
           </div>

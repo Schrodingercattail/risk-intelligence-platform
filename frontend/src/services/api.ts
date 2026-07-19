@@ -61,6 +61,11 @@ export const riskApi = {
     const query = depth ? `?depth=${depth}` : '';
     return api.get<GraphData>(`/api/risk/graph/${userId}${query}`);
   },
+  getCaseEvidence: (userId: string) => api.get<RiskEvidence>(`/api/risk/cases/${userId}/evidence`),
+  getNetworkSignals: (userId: string, limit?: number) => {
+    const query = limit ? `?limit=${limit}` : '';
+    return api.get<NetworkSignals>(`/api/risk/cases/${userId}/network-signals${query}`);
+  },
   generateExplanation: (userId: string) =>
     api.post<Explanation>('/api/risk/explain', { user_id: userId }),
 };
@@ -269,6 +274,9 @@ export interface PSIFeature {
 export interface ModelMonitoringData {
   model_name: string;
   version: string;
+  algorithm?: string | null;
+  model_type?: string | null;
+  feature_count?: number | null;
   deployed_at?: string;
   metrics: {
     auc: number | null;
@@ -277,4 +285,105 @@ export interface ModelMonitoringData {
   };
   psi_status: 'stable' | 'warning' | 'drift' | 'unknown';
   psi_features: PSIFeature[];
+}
+
+// Risk Evidence Explainability Types
+export interface RiskSummary {
+  risk_level: string;
+  risk_score: number;
+  primary_reason?: string;
+  recommended_action?: string;
+  detection_methods: string[];
+  detected_at?: string;
+  ml_score?: number;
+  rule_score?: number;
+  graph_score?: number;
+}
+
+export interface TransactionEvidence {
+  transaction_id: string;
+  symbol: string;
+  side: string;
+  price: number;
+  quantity: number;
+  value: number;
+  timestamp?: string;
+  risk_reason: string;
+}
+
+export interface WithdrawalEvidence {
+  withdrawal_id: string;
+  asset: string;
+  amount: number;
+  address: string;
+  is_new_address?: boolean;
+  timestamp?: string;
+  risk_reason: string;
+}
+
+export interface NetworkEvidence {
+  cluster_id: number;
+  cluster_name: string;
+  detection_type: string;
+  member_count: number;
+  cluster_risk_score: number;
+  role_in_cluster?: string;
+  related_accounts_count: number;
+  related_accounts: string[];
+  shared_devices: string[];
+}
+
+export interface ConnectedAccountSignal {
+  user_id: string;
+  relationship_type: string[];  // shared_device, shared_ip
+  device_fingerprints: string[];
+  shared_ips: string[];
+  risk_level: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL' | 'UNKNOWN';
+  risk_score: number;
+}
+
+export interface NetworkSignals {
+  connected_account_count: number;
+  connected_accounts: ConnectedAccountSignal[];
+}
+
+export interface RiskFactorEvidence {
+  factor_id: number;
+  factor_name: string;
+  factor_value?: number;
+  factor_description?: string;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+}
+
+export interface FeatureEvidence {
+  shared_device_count?: number;
+  linked_account_count?: number;
+  unique_ip_count?: number;
+  trade_frequency_24h?: number;
+  trade_frequency_7d?: number;
+  opposite_trade_ratio?: number;
+  avg_trade_size?: number;
+  trade_volume_24h?: number;
+  account_age_days?: number;
+  active_days_count?: number;
+  withdrawal_risk_score?: number;
+  withdrawal_frequency_24h?: number;
+  withdrawal_volume_24h?: number;
+}
+
+export interface RuleEvidence {
+  rule_name: string;
+  severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  description: string;
+}
+
+export interface RiskEvidence {
+  user_id: string;
+  risk_summary: RiskSummary;
+  transaction_evidence: TransactionEvidence[];
+  withdrawal_evidence: WithdrawalEvidence[];
+  network_evidence?: NetworkEvidence;
+  risk_factor_evidence: RiskFactorEvidence[];
+  feature_evidence?: FeatureEvidence;
+  rule_evidence: RuleEvidence[];
 }

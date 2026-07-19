@@ -281,12 +281,13 @@ GET /api/risk/cases?page=1&page_size=50&risk_level=high
 Response:
 
 {
-  "cases": [
+  "items": [
     {
       "user_id": "U001",
       "risk_score": 87,
       "risk_level": "HIGH",
-      "detection_method": ["LightGBM Model", "Rule Engine"],
+      "detection_methods": ["LightGBM Model", "Rule Engine"],
+      "primary_reason": "Suspicious trading pattern",
       "recommended_action": "Review suspicious transaction activity",
       "detected_at": "2026-07-15T10:32:00"
     }
@@ -295,6 +296,16 @@ Response:
   "page": 1,
   "page_size": 50
 }
+
+Table Columns (Frontend Display):
+- Case ID
+- User ID
+- Risk Score
+- Risk Level
+- Detection (detection_methods badge)
+- Recommended Action
+
+Note: "Risk Signals" column removed - risk signals are now displayed in Investigation page case detail panel via Risk Evidence section.
 
 Risk Filtering Rules:
 
@@ -1065,6 +1076,9 @@ Response (with trained model):
 {
   "model_name": "LightGBM Risk Model",
   "version": "20260718_143022",
+  "algorithm": "LightGBM",
+  "model_type": "Gradient Boosting",
+  "feature_count": 14,
   "deployed_at": "2026-07-18T14:30:22Z",
   "metrics": {
     "auc": 0.8567,
@@ -1082,6 +1096,9 @@ Response (no model trained):
 {
   "model_name": "LightGBM Risk Model",
   "version": "v1.0",
+  "algorithm": null,
+  "model_type": null,
+  "feature_count": null,
   "deployed_at": null,
   "metrics": {
     "auc": null,
@@ -1191,3 +1208,310 @@ Model Behavior with Current Labels:
 - AUC/KS metrics reflect cluster-based labeling
 - Feature importance highlights device/trading patterns in clusters
 - Suitable for pipeline demonstration, not production decision-making
+
+18. Risk Evidence Explainability API
+
+API:
+
+GET /api/risk/cases/{user_id}/evidence
+
+Purpose:
+
+Returns explainable evidence behind a risk case for investigation workflow.
+
+This is a READ-ONLY explanation generated from existing backend data.
+Does NOT modify risk scores, ML predictions, or perform new detection.
+
+Response:
+
+{
+  "user_id": "U01406",
+  "risk_summary": {
+    "risk_level": "HIGH",
+    "risk_score": 80.27,
+    "primary_reason": "Graph Network Analysis",
+    "recommended_action": "Manual Review",
+    "detection_methods": ["LightGBM", "Rule Engine", "Graph Network"],
+    "detected_at": "2026-07-18T09:19:42Z",
+    "ml_score": 99.54,
+    "rule_score": 35.0,
+    "graph_score": 100.0
+  },
+  "transaction_evidence": [
+    {
+      "transaction_id": "T024565",
+      "symbol": "BTC",
+      "side": "SELL",
+      "price": 46854.26,
+      "quantity": 8.2299,
+      "value": 385605.90,
+      "timestamp": "2026-06-23T02:27:47Z",
+      "risk_reason": "Large transaction amount"
+    }
+  ],
+  "withdrawal_evidence": [
+    {
+      "withdrawal_id": "W005755",
+      "asset": "ETH",
+      "amount": 19.42,
+      "address": "0xau87cm453kf486i3ce8zna8nzxc45bnccu3fg00z",
+      "is_new_address": false,
+      "timestamp": "2026-06-23T01:05:47Z",
+      "risk_reason": "Large withdrawal amount"
+    }
+  ],
+  "network_evidence": {
+    "cluster_id": 6,
+    "cluster_name": "Cluster_device_sharing_6",
+    "detection_type": "device_sharing",
+    "member_count": 24,
+    "cluster_risk_score": 92.77,
+    "role_in_cluster": "spoke",
+    "related_accounts_count": 23,
+    "related_accounts": ["U01407", "U01408", "U01409"],
+    "shared_devices": ["DEVICE001", "DEVICE002"]
+  },
+  "risk_factor_evidence": [
+    {
+      "factor_id": 67234,
+      "factor_name": "Shared Device Relationships",
+      "factor_value": 1.0,
+      "factor_description": "1 linked accounts through shared devices",
+      "severity": "medium"
+    }
+  ],
+  "feature_evidence": {
+    "shared_device_count": 1,
+    "linked_account_count": 23,
+    "unique_ip_count": 1,
+    "trade_frequency_24h": 0,
+    "trade_frequency_7d": 2,
+    "opposite_trade_ratio": 0.15,
+    "avg_trade_size": 45000.50,
+    "trade_volume_24h": 0,
+    "account_age_days": 86,
+    "active_days_count": 45,
+    "withdrawal_risk_score": 0.5,
+    "withdrawal_frequency_24h": 0,
+    "withdrawal_volume_24h": 0
+  },
+  "rule_evidence": [
+    {
+      "rule_name": "Large linked account network",
+      "severity": "MEDIUM",
+      "description": "User connected to 23 other accounts"
+    }
+  ]
+}
+
+Evidence Definitions:
+
+1. Transaction Evidence
+- Shows top 3-5 suspicious trades by value
+- Displays transaction ID, symbol, side, price, quantity, calculated value
+- Includes risk reason classification (e.g., "Large transaction amount")
+- Source: trades table
+
+2. Withdrawal Evidence
+- Shows top 3-5 withdrawals by amount
+- Displays asset, amount, destination address
+- Highlights withdrawals to new addresses
+- Source: withdrawals table
+
+3. Network Evidence
+- Shows cluster membership and relationships
+- Displays cluster ID, type, member count, cluster risk score
+- Lists related accounts and shared devices
+- Source: cluster_members, account_clusters tables
+
+4. Risk Factor Evidence
+- Shows detailed risk factors from latest risk event
+- Displays factor name, value, description, severity
+- Source: risk_factors table
+
+5. Feature Evidence
+- Shows ML feature values that contributed to risk score
+- Displays all 12 engineered features (shared_device_count, trade_frequency_24h, etc.)
+- Source: feature_table
+
+6. Rule Evidence
+- Shows triggered rules derived from feature values
+- Displays rule name, severity, description
+- Source: Derived from feature values using same logic as RiskScoringService
+
+Frontend Usage:
+
+Investigation page - Case Detail panel:
+- Transaction Signals section
+- Withdrawal Signals section
+- Network Signals section
+- Rule Signals section
+- Risk Drivers section
+
+Design Requirements:
+- Match existing UI style
+- Use cards/components consistent with current application
+- Avoid overwhelming the user
+- This is an investigator workflow, not a data dump
+
+Architecture Compliance:
+
+✅ READ-ONLY - Does NOT modify risk scores
+✅ READ-ONLY - Does NOT modify ML predictions
+✅ READ-ONLY - Does NOT modify risk level thresholds
+✅ NO artificial demo logic - All data from actual database
+✅ Aggregates existing evidence - No new detection or scoring
+
+19. Network Signals Explainability
+
+API:
+
+GET /api/risk/cases/{user_id}/network-signals?limit=5
+
+Purpose:
+
+Returns entity-level network relationship evidence for investigation workflow.
+
+This is a READ-ONLY explanation generated from existing backend data.
+Does NOT modify risk scores, ML predictions, or perform new detection.
+
+Purpose:
+
+Move from "network detected risk" to "here are the specific network relationships that explain the risk."
+
+Response:
+
+{
+  "connected_account_count": 6,
+  "connected_accounts": [
+    {
+      "user_id": "U10234",
+      "relationship_type": ["shared_device"],
+      "device_fingerprints": ["DEVICE_88921"],
+      "shared_ips": [],
+      "risk_level": "HIGH",
+      "risk_score": 82
+    },
+    {
+      "user_id": "U10987",
+      "relationship_type": ["shared_ip"],
+      "device_fingerprints": [],
+      "shared_ips": ["192.168.1.100"],
+      "risk_level": "MEDIUM",
+      "risk_score": 65
+    }
+  ]
+}
+
+Field Definitions:
+
+- connected_account_count: Total number of accounts connected to this user through network relationships
+
+- connected_accounts: List of related accounts with relationship details
+  - user_id: Related account identifier
+  - relationship_type: Array of relationship types connecting the accounts
+    - "shared_device": Both accounts used the same device
+    - "shared_ip": Both accounts accessed from the same IP address
+  - device_fingerprints: Device IDs that both accounts share (if relationship_type includes "shared_device")
+  - shared_ips: IP addresses that both accounts share (if relationship_type includes "shared_ip")
+  - risk_level: Related account's current risk level (LOW/MEDIUM/HIGH/CRITICAL/UNKNOWN)
+  - risk_score: Related account's current risk score (0-100)
+
+Request Parameters:
+
+- limit: Maximum number of connected accounts to return (default: 5, max: 50)
+
+Data Sources:
+
+- Cluster membership from cluster_members table
+- Device relationships from devices table (device_id, ip_address)
+- Risk scores from risk_events table
+
+Supported Relationship Types (MVP):
+
+1. Shared Device Fingerprint
+   - Multiple accounts using the same device
+   - Evidence: device_id from devices table
+
+2. Shared IP Address
+   - Multiple accounts accessing from the same IP
+   - Evidence: ip_address from devices table
+
+NOT Implemented (out of MVP scope):
+- Email similarity
+- Address similarity
+- Behavioral similarity
+- Graph embedding similarity
+
+Frontend Usage:
+
+Investigation page - Case Detail panel - Network Signals section:
+
+Display structure:
+1. Cluster summary (from network_evidence)
+   - Cluster name, type, member count, cluster risk score
+
+2. Connected accounts (from network_signals)
+   - Expandable list of related accounts
+   - Default display: top 3 riskiest connections (sorted by risk_score descending)
+   - Load More button: Shows 3 more accounts each click
+   - Each account shows:
+     - Account ID
+     - Relationship type(s)
+     - Evidence entity (device ID, IP address)
+     - Risk level
+     - Risk score
+
+3. Empty state
+   - "No suspicious network relationships detected."
+   - Only shown when connected_account_count = 0
+
+Load More Behavior:
+- Initial display: top 3 accounts (highest risk_score)
+- "Load More" button appears when connected_account_count > displayed count
+- Each click increases display by 3 accounts
+- Button shows remaining count: "Load More (X more accounts)"
+
+Transaction Evidence Load More:
+- Initial display: top 3 transactions (highest value)
+- "Load More" button appears when transaction_evidence.length > 3
+- Each click increases display by 3 transactions
+- Button shows remaining count: "Load More (X more transactions)"
+
+UI Example:
+
+▼ U10234
+  Shared Device Fingerprint
+  DEVICE_88921
+  HIGH Risk (82/100)
+
+▼ U10987
+  Shared IP Address
+  192.168.1.100
+  MEDIUM Risk (65/100)
+
+Sorted by:
+- Risk score (highest first) for investigation priority
+
+Load More:
+If connected_account_count exceeds limit, show remaining count
+
+Data Flow:
+
+1. User selects case in Investigation Queue
+2. Frontend calls GET /api/risk/cases/{user_id}/network-signals
+3. EvidenceService.get_network_signals() queries:
+   - cluster_members table for related accounts
+   - devices table for shared devices and IPs
+   - risk_events table for related account risk scores
+4. Returns evidence package with relationship-level detail
+5. Frontend displays expandable account relationships
+
+Compliance:
+
+✅ READ-ONLY - Does NOT modify risk scoring logic
+✅ READ-ONLY - Does NOT modify ML model inference
+✅ READ-ONLY - Does NOT modify graph detection algorithm
+✅ READ-ONLY - Does NOT modify clustering logic
+✅ NO artificial data - All relationships from actual database
+✅ READ-ONLY explanation from existing cluster and device data

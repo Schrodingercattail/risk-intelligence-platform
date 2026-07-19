@@ -344,6 +344,120 @@ class ExplanationResponse(BaseModel):
 
 
 # ============================================================
+# Risk Evidence Explainability Schemas
+# ============================================================
+
+class RiskSummary(BaseModel):
+    """Risk summary from latest risk event."""
+    risk_level: str
+    risk_score: float
+    primary_reason: Optional[str] = None
+    recommended_action: Optional[str] = None
+    detection_methods: List[str] = []
+    detected_at: Optional[str] = None
+    ml_score: Optional[float] = None
+    rule_score: Optional[float] = None
+    graph_score: Optional[float] = None
+
+
+class TransactionEvidence(BaseModel):
+    """Suspicious transaction evidence."""
+    transaction_id: str
+    symbol: str
+    side: str
+    price: float
+    quantity: float
+    value: float
+    timestamp: Optional[str] = None
+    risk_reason: str
+
+
+class WithdrawalEvidence(BaseModel):
+    """Suspicious withdrawal evidence."""
+    withdrawal_id: str
+    asset: str
+    amount: float
+    address: str
+    is_new_address: Optional[bool] = None
+    timestamp: Optional[str] = None
+    risk_reason: str
+
+
+class NetworkEvidence(BaseModel):
+    """Network/graph evidence from cluster membership."""
+    cluster_id: int
+    cluster_name: str
+    detection_type: str
+    member_count: int
+    cluster_risk_score: float
+    role_in_cluster: Optional[str] = None
+    related_accounts_count: int
+    related_accounts: List[str] = []
+    shared_devices: List[str] = []
+
+
+class ConnectedAccountSignal(BaseModel):
+    """Detailed signal for a connected account in the network."""
+    user_id: str
+    relationship_type: List[str] = []  # shared_device, shared_ip
+    device_fingerprints: List[str] = []
+    shared_ips: List[str] = []
+    risk_level: str
+    risk_score: float
+
+
+class NetworkSignalsResponse(BaseModel):
+    """Network signals showing entity-level relationship evidence."""
+    connected_account_count: int
+    connected_accounts: List[ConnectedAccountSignal] = []
+
+
+class RiskFactorEvidence(BaseModel):
+    """Detailed risk factor evidence."""
+    factor_id: int
+    factor_name: str
+    factor_value: Optional[float] = None
+    factor_description: Optional[str] = None
+    severity: str = "medium"  # low, medium, high, critical
+
+
+class FeatureEvidence(BaseModel):
+    """Feature evidence from feature table."""
+    shared_device_count: Optional[int] = None
+    linked_account_count: Optional[int] = None
+    unique_ip_count: Optional[int] = None
+    trade_frequency_24h: Optional[int] = None
+    trade_frequency_7d: Optional[int] = None
+    opposite_trade_ratio: Optional[float] = None
+    avg_trade_size: Optional[float] = None
+    trade_volume_24h: Optional[float] = None
+    account_age_days: Optional[int] = None
+    active_days_count: Optional[int] = None
+    withdrawal_risk_score: Optional[float] = None
+    withdrawal_frequency_24h: Optional[int] = None
+    withdrawal_volume_24h: Optional[float] = None
+
+
+class RuleEvidence(BaseModel):
+    """Rule evidence derived from feature values."""
+    rule_name: str
+    severity: str  # LOW, MEDIUM, HIGH, CRITICAL
+    description: str
+
+
+class RiskEvidenceResponse(BaseModel):
+    """Complete risk evidence response for investigation."""
+    user_id: str
+    risk_summary: RiskSummary
+    transaction_evidence: List[TransactionEvidence] = []
+    withdrawal_evidence: List[WithdrawalEvidence] = []
+    network_evidence: Optional[NetworkEvidence] = None
+    risk_factor_evidence: List[RiskFactorEvidence] = []
+    feature_evidence: Optional[FeatureEvidence] = None
+    rule_evidence: List[RuleEvidence] = []
+
+
+# ============================================================
 # Data Upload Schemas
 # ============================================================
 

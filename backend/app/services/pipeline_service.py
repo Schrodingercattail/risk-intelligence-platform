@@ -373,6 +373,9 @@ class PipelineService:
             model_metadata = ModelMetadata(
                 model_name="LightGBM Risk Model",
                 version=version,
+                algorithm="LightGBM",
+                model_type="Gradient Boosting",
+                feature_count=len(training_results['feature_importance']),
                 auc_score=training_results['metrics']['auc'],
                 ks_score=training_results['metrics']['ks'],
                 psi_score=0.0,  # Will be calculated on next monitoring cycle

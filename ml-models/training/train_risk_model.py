@@ -49,6 +49,9 @@ async def save_metadata_to_db(
         model = ModelMetadata(
             model_name="LightGBM Risk Model",
             version=version,
+            algorithm="LightGBM",
+            model_type="Gradient Boosting",
+            feature_count=len(feature_importance),
             auc_score=float(auc),
             ks_score=float(ks),
             psi_score=0.0,  # PSI requires reference population

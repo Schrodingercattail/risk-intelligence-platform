@@ -224,6 +224,9 @@ class ModelMetadata(Base):
     model_id = Column(Integer, primary_key=True, autoincrement=True)
     model_name = Column(String(100), nullable=False)
     version = Column(String(20), nullable=False)
+    algorithm = Column(String(50), nullable=True)  # e.g., "LightGBM"
+    model_type = Column(String(50), nullable=True)  # e.g., "Gradient Boosting"
+    feature_count = Column(Integer, nullable=True)  # Number of features used
     auc_score = Column(Numeric(5, 4), nullable=True)
     ks_score = Column(Numeric(5, 4), nullable=True)
     psi_score = Column(Numeric(5, 4), nullable=True)

@@ -115,6 +115,9 @@ class ModelMonitoringService:
             metrics = {
                 "model_name": model.model_name,
                 "version": model.version,
+                "algorithm": model.algorithm if hasattr(model, 'algorithm') else "LightGBM",
+                "model_type": model.model_type if hasattr(model, 'model_type') else "Gradient Boosting",
+                "feature_count": model.feature_count if hasattr(model, 'feature_count') else None,
                 "deployed_at": model.deployed_at.isoformat() if model.deployed_at else None,
                 "metrics": {
                     "auc": float(model.auc_score) if model.auc_score else None,
@@ -128,6 +131,9 @@ class ModelMonitoringService:
             metrics = {
                 "model_name": "LightGBM Risk Model",
                 "version": "v1.0",
+                "algorithm": None,
+                "model_type": None,
+                "feature_count": None,
                 "deployed_at": None,
                 "metrics": {
                     "auc": None,

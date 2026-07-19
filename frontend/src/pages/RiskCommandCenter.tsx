@@ -283,7 +283,6 @@ export default function RiskCommandCenter() {
         risk_score: Math.round(item.risk_score),
         risk_level: item.risk_level as RiskLevel,
         detection_methods: item.detection_methods || [], // Use backend-generated detection methods
-        risk_factors: item.primary_reason ? [item.primary_reason] : ['Risk signals detected'],
         recommended_action: item.recommended_action || 'Review case',
       };
     });
@@ -346,7 +345,6 @@ export default function RiskCommandCenter() {
     { key: 'risk_score', header: 'Risk Score', className: 'text-sm' },
     { key: 'risk_level', header: 'Risk Level', className: 'text-sm' },
     { key: 'detection_methods', header: 'Detection', className: 'text-sm' },
-    { key: 'risk_factors', header: 'Risk Signals', className: 'text-sm' },
     { key: 'recommended_action', header: 'Recommended Action', className: 'text-sm' },
   ];
 
@@ -370,16 +368,6 @@ export default function RiskCommandCenter() {
       </span>
     ),
     detection_methods: getDetectionBadge(item.detection_methods),
-    risk_factors: (
-      <div className="flex flex-wrap gap-1">
-        {item.risk_factors.slice(0, 2).map((factor, idx) => (
-          <span key={idx} className="text-xs text-slate-600">• {factor}</span>
-        ))}
-        {item.risk_factors.length > 2 && (
-          <span className="text-xs text-slate-400">+{item.risk_factors.length - 2}</span>
-        )}
-      </div>
-    ),
     recommended_action: <span className="text-sm text-slate-700">{item.recommended_action}</span>,
   }));
 

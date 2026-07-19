@@ -22,6 +22,7 @@ from app.models.schemas import (
     ExplanationRequest,
     ExplanationResponse,
     ClusterInfo,
+    RiskEvidenceResponse,
 )
 from sqlalchemy import select, func, desc, text
 from app.config import settings
@@ -514,3 +515,67 @@ async def generate_explanation(
     )
 
     return ExplanationResponse(**explanation)
+
+
+@router.get("/cases/{user_id}/evidence", response_model=RiskEvidenceResponse)
+async def get_case_evidence(
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get explainable evidence for a risk case.
+
+    Returns aggregated evidence from transactions, network, rules, and features.
+    This is a READ-ONLY endpoint that does not modify risk scores.
+
+    Evidence sources:
+    - Transaction evidence: Top suspicious trades by value
+    - Withdrawal evidence: Large withdrawals, especially to new addresses
+    - Network evidence: Cluster membership and related accounts
+    - Risk factor evidence: Detailed factors from risk event
+    - Feature evidence: ML feature values that contributed to score
+    - Rule evidence: Derived triggered rules based on feature values
+    """
+    from app.services.evidence_service import EvidenceService
+    from app.models.schemas import RiskEvidenceResponse
+
+    service = EvidenceService(db)
+    evidence = await service.get_case_evidence(user_id)
+
+    return RiskEvidenceResponse(**evidence)
+
+
+@router.get("/cases/{user_id}/network-signals")
+async def get_network_signals(
+    user_id: str,
+    limit: int = 5,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get detailed network signals showing entity-level relationships.
+
+    Returns actionable investigation evidence showing:
+    - Which specific accounts are connected to this user
+    - What relationship types connect them (shared device, shared IP)
+    - The evidence entities (device IDs, IP addresses)
+    - Each related account's risk level and score
+
+    This is a READ-ONLY endpoint that does not modify risk scores.
+    It only aggregates existing network relationship data.
+
+    Args:
+        user_id: User to get network signals for
+        limit: Maximum number of connected accounts to return (default: 5)
+
+    Returns:
+        Network signals with connected accounts details
+    """
+    from app.services.evidence_service import EvidenceService
+
+    service = EvidenceService(db)
+    signals = await service.get_network_signals(user_id, limit)
+
+    if not signals:
+        return {"connected_account_count": 0, "connected_accounts": []}
+
+    return signals

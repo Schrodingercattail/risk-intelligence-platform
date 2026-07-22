@@ -1,35 +1,165 @@
-# AI-Powered Market Integrity & Account Risk Monitoring Platform
+# Risk Management Platform Prototype
 
-A demonstration portfolio project for an AI-powered risk monitoring platform designed for cryptocurrency exchanges.
+An enterprise-grade risk management platform prototype demonstrating ML-powered fraud detection, rule-based risk assessment, and graph-based network analysis for cryptocurrency exchanges.
 
-## Overview
+## Project Overview
 
-This platform helps risk analysts identify suspicious users involved in:
-- Coordinated trading
-- Market manipulation
-- Arbitrage abuse
-- Account farming
-- Linked account operations
-- Abnormal withdrawal behavior
+This is an **extensible risk management platform prototype** designed to showcase enterprise-level fraud detection capabilities. The platform implements a complete risk detection pipeline from data ingestion through scoring, monitoring, and alerting.
 
-**Key Philosophy**: This is an investigation support system, not an auto-ban system. The final enforcement decision remains with human operators.
+### Core Capabilities
 
-## Architecture
+- **ML Risk Scoring** - LightGBM-powered pattern recognition with AUC > 0.85
+- **Rule Engine** - Expert-defined risk signals for known fraud patterns
+- **Graph Detection** - Network analysis for coordinated fraud rings
+- **Risk Event Lifecycle** - Complete audit trail with pipeline traceability
+- **PSI Monitoring** - Model drift detection with Population Stability Index
+- **Multi-Signal Fusion** - Weighted combination with business override logic
 
-The system consists of three intelligence layers:
+### Design Philosophy
 
-1. **ML Risk Model (LightGBM)** - Pattern recognition and historical risk learning
-2. **Rule Engine** - Explicit risk signals (e.g., new account with large withdrawal)
-3. **Graph Analysis (NetworkX)** - Relationship detection and cluster analysis
+This platform is an **investigation support system**, not an auto-ban system. The final enforcement decision remains with human operators.
 
-### Technology Stack
+## Architecture Overview
 
-- **Backend**: Python, FastAPI, PostgreSQL, SQLAlchemy
-- **Frontend**: React, TypeScript, Tailwind CSS, Recharts, React Flow
+### Current Prototype Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                  DATASET INGESTION LAYER                     │
+├─────────────────────────────────────────────────────────────┤
+│  CSV Upload → Data Validation → Quality Checks             │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│               FEATURE ENGINEERING PIPELINE                    │
+├─────────────────────────────────────────────────────────────┤
+│  13 Risk Features: Device Patterns, Trading Behavior,       │
+│  Account Attributes, Withdrawal Activity                     │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│              RISK DETECTION ENGINE                            │
+├─────────────────────────────────────────────────────────────┤
+│                                                               │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐    │
+│  │ ML Model     │  │ Rule Engine  │  │ Graph Detect │    │
+│  │ (LightGBM)   │  │              │  │ (NetworkX)   │    │
+│  └──────────────┘  └──────────────┘  └──────────────┘    │
+│         │                  │                  │              │
+│         └──────────────────┴──────────────────┘              │
+│                     Signal Fusion                              │
+│                  (0.5 + 0.3 + 0.2)                            │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│              RISK EVENT GENERATION                           │
+├─────────────────────────────────────────────────────────────┤
+│  Risk Score + Risk Level + Pipeline Traceability            │
+│  + Signal Attribution + Evidence Factors                    │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│              MONITORING & DRIFT DETECTION                     │
+├─────────────────────────────────────────────────────────────┤
+│  PSI Analysis → Model Drift Detection → Retraining          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## Technology Stack
+
+- **Backend**: Python 3.12+, FastAPI, PostgreSQL, SQLAlchemy
+- **Frontend**: React, TypeScript, Tailwind CSS, Recharts
 - **ML**: LightGBM, scikit-learn, pandas
-- **Graph**: NetworkX
-- **LLM**: Claude API (abstracted for provider flexibility)
+- **Graph**: NetworkX for relationship analysis
+- **Monitoring**: PSI for model drift detection
 - **Deployment**: Docker Compose
+
+## Current Scope
+
+### ✅ Implemented
+
+**Data Layer**
+- Dataset ingestion with CSV upload
+- Data validation and quality checks
+- Feature engineering pipeline (13 features)
+
+**Detection Layer**
+- ML risk scoring with LightGBM (AUC: 0.85, KS: 0.43)
+- Rule-based expert system
+- Graph-based network analysis
+- Multi-signal fusion with weighted combination
+
+**Risk Management**
+- Risk event generation with complete traceability
+- Pipeline run tracking (pipeline_run_id, model_version)
+- Signal attribution and evidence factors
+- Risk level override for coordinated fraud
+
+**Monitoring**
+- PSI-based model drift detection
+- Feature distribution monitoring
+- Baseline validation
+- Performance metrics tracking
+
+**Visualization**
+- Risk command center dashboard
+- Investigation queue with filtering
+- Model monitoring interface
+- PSI drift visualization
+
+### 🚧 Future Enhancements
+
+**Enterprise Data Integration**
+- Database connectors for operational systems
+- Data warehouse integration
+- Streaming data pipeline support
+- Real-time event processing
+
+**Case Management**
+- Case lifecycle workflow (creation → assignment → investigation → resolution)
+- Integration with external case management systems
+- Collaborative investigation tools
+- Audit trail for case actions
+
+**Advanced Features**
+- Automated retraining based on PSI thresholds
+- Real-time alerting and notifications
+- Advanced graph analytics with temporal patterns
+- Explainable AI enhancements
+
+## Production Deployment Considerations
+
+### Demo vs Production Environment
+
+| Aspect | Demo Environment | Production Environment |
+|--------|-----------------|----------------------|
+| **Data Source** | CSV upload via UI | Database/Data Warehouse integration |
+| **Processing** | Batch pipeline | Streaming + Batch |
+| **Case Management** | Not implemented | Full workflow or external system |
+| **Authentication** | Not implemented | Enterprise SSO/OAuth |
+| **Monitoring** | Manual API checks | Integrated observability |
+
+### Enterprise Extension Path
+
+```
+Current: Dataset → Platform → Risk Event
+
+Future:  Enterprise Data → Platform → Risk Event → Case System → Resolution
+```
+
+**Data Integration Options**
+- Database Connectors (PostgreSQL, MySQL, MongoDB)
+- Data Warehouse (Snowflake, BigQuery, Redshift)
+- Data Lake (S3, ADLS, HDFS)
+- Streaming (Kafka, Kinesis, Pub/Sub)
+
+**Case Management Directions**
+1. **Internal Workflow**: Build complete case lifecycle within platform
+2. **External Integration**: API-based connection to existing case systems
 
 ## Project Structure
 
@@ -40,8 +170,8 @@ risk-platform-demo/
 │   │   ├── api/          # API routes
 │   │   ├── models/       # Database models & schemas
 │   │   ├── services/     # Business logic layer
-│   │   ├── ml/           # ML models & training
-│   │   └── db/           # Database session
+│   │   ├── ml/           # ML models & PSI monitoring
+│   │   └── migrations/   # Database migration scripts
 │   └── requirements.txt
 ├── frontend/             # React application
 │   ├── src/
@@ -50,7 +180,20 @@ risk-platform-demo/
 │   │   └── services/     # API client
 │   └── package.json
 ├── ml-models/            # ML training & artifacts
-├── data/                 # Sample and generated data
+│   └── training/         # Training scripts
+├── test_data/            # Validation datasets
+│   ├── v2_diverse/       # Training data
+│   ├── v3_subtle_drift/  # Stable monitoring demo
+│   ├── v3_realistic_drift/ # Warning drift demo
+│   ├── v3_drift/         # Severe drift demo
+│   └── v4_demo_production/ # Production validation
+├── docs/                 # Project documentation
+│   ├── ml-pipeline.md
+│   ├── psi-monitoring.md
+│   ├── model-monitoring.md
+│   ├── risk-event-lifecycle.md
+│   ├── data-contract.md
+│   └── validation-report.md
 └── docker-compose.yml
 ```
 
@@ -60,7 +203,7 @@ risk-platform-demo/
 
 - Docker and Docker Compose
 - (Optional) Python 3.12+ for local development
-- (Optional) Node.js 20+ for local development
+- (Optional) Node.js 20+ for frontend development
 
 ### Using Docker Compose
 
@@ -98,25 +241,46 @@ npm install
 npm run dev
 ```
 
-## Data Pipeline
+## Model Training
 
-The demo includes configurable data generation:
+```bash
+# Train ML model from CSV data
+python ml-models/training/train_risk_model.py --source csv
 
-1. Upload CSV files (users, devices, trades, withdrawals)
-2. Data validation and feature engineering
-3. ML scoring + Rule evaluation + Graph analysis
-4. Risk events stored in database
-5. Visualized in dashboard
+# Train from database (after pipeline run)
+python ml-models/training/train_risk_model.py --source database
+```
 
-**Default demo scale**: 2,000 users, 20,000 trades, 25 suspicious clusters
+## Risk Level Override
+
+The platform implements a **business severity layer** for coordinated fraud detection.
+
+**Override Condition** (when ALL three are true):
+- ML score ≥ 80
+- Rule score ≥ 40  
+- Graph score ≥ 50
+
+**Result**: Risk level elevated to CRITICAL, regardless of weighted score.
+
+This handles edge cases where weighted combination may underrepresent coordinated manipulation threat levels.
 
 ## Model Metrics
 
-The system tracks three key metrics:
+| Metric | Value | Target | Status |
+|--------|-------|--------|--------|
+| AUC | 0.85 | > 0.75 | ✅ Excellent |
+| KS | 0.43 | > 0.30 | ✅ Strong |
+| PSI | < 0.1 | < 0.10 | ✅ Stable |
 
-- **AUC** (Area Under ROC): Overall discrimination ability (target: >0.75)
-- **KS** (Kolmogorov-Smirnov): Maximum separation between distributions (target: >0.30)
-- **PSI** (Population Stability Index): Model drift detection (target: <0.10)
+## Documentation
+
+- [ML Pipeline Documentation](docs/ml-pipeline.md)
+- [PSI Monitoring Guide](docs/psi-monitoring.md)
+- [Model Monitoring](docs/model-monitoring.md)
+- [Risk Event Lifecycle](docs/risk-event-lifecycle.md)
+- [Data Contract](docs/data-contract.md)
+- [Validation Report](docs/validation-report.md)
+- [Test Data Catalog](test_data/README.md)
 
 ## Configuration
 
@@ -135,7 +299,7 @@ RULE_WEIGHT=0.3
 GRAPH_WEIGHT=0.2
 
 # Detection Thresholds
-HIGH_RISK_THRESHOLD=0.8
+HIGH_RISK_THRESHOLD=0.7
 MEDIUM_RISK_THRESHOLD=0.5
 ```
 

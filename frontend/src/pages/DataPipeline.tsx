@@ -3,10 +3,15 @@
  *
  * Batch CSV upload and risk analysis pipeline monitoring interface.
  * This is a batch processing system, not a real-time platform.
+ *
+ * State Management: Backend is the single source of truth.
+ * Frontend derives all state from backend API responses.
  */
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Button } from '../components/UI';
 import { pipelineApi, PipelineStatus } from '../services/api';
+import SimpleMetricTooltip from '../components/UI/DataProvenanceTooltip';
 
 // Required CSV datasets
 const REQUIRED_DATASETS = [
@@ -26,51 +31,22 @@ const PIPELINE_STAGES = [
   { id: 'decision', name: 'Risk Decision Engine', description: 'Rule-based risk decisions', icon: '⚖️' },
 ] as const;
 
-interface UploadedDataset {
-  name: string;
-  records?: number;
-  uploadedAt?: string;
-  fileSize?: number;
-}
-
-interface PipelineState {
-  currentStage: string;
-  stages: Record<string, 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED'>;
-  results?: {
-    totalRecords?: number;
-    highRiskCount?: number;
-    fraudNetworks?: number;
-    generatedAt?: string;
-  };
-}
-
-// Map backend pipeline status to frontend stages
-const mapBackendStatusToFrontend = (
-  backendStatus: PipelineStatus & { data_sources?: string }
-): Record<string, 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED'> => {
-  const toStatus = (s?: string): 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' => {
-    if (s === 'PENDING' || s === 'RUNNING' || s === 'COMPLETED' || s === 'FAILED') return s;
-    return 'PENDING';
-  };
-  return {
-    data_sources: toStatus(backendStatus.data_sources),
-    validation: toStatus(backendStatus.dataset_validation),
-    features: toStatus(backendStatus.feature_engineering),
-    scoring: toStatus(backendStatus.ml_scoring),
-    graph: toStatus(backendStatus.graph_analysis),
-    decision: toStatus(backendStatus.ml_scoring) === 'COMPLETED' ? 'COMPLETED' : 'PENDING',
-  };
-};
+type UploadStatus = 'INITIAL' | 'UPLOADING' | 'UPLOADED' | 'FAILED';
 
 export default function DataPipeline() {
-  const [uploadedDatasets, setUploadedDatasets] = useState<Record<string, UploadedDataset>>({});
-  const [files, setFiles] = useState<Record<string, File>>({});
-  const [pipelineState, setPipelineState] = useState<PipelineState>({
-    currentStage: '',
-    stages: PIPELINE_STAGES.reduce((acc, stage) => ({ ...acc, [stage.id]: 'PENDING' }), {}),
-  });
-  const [loading, setLoading] = useState(false);
+  const navigate = useNavigate();
+
+  // Local UI state only
+  const [uploadStatus, setUploadStatus] = useState<UploadStatus>('INITIAL');
+  const [uploading, setUploading] = useState(false);
+  const [runningPipeline, setRunningPipeline] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Backend state - single source of truth
+  const [pipelineStatus, setPipelineStatus] = useState<PipelineStatus | null>(null);
+
+  // File selection state (only needed during upload process)
+  const [files, setFiles] = useState<Record<string, File>>({});
 
   // Load pipeline status on component mount
   useEffect(() => {
@@ -80,31 +56,30 @@ export default function DataPipeline() {
   const loadPipelineStatus = async () => {
     try {
       const status = await pipelineApi.getStatus();
-      const frontendStages = mapBackendStatusToFrontend(status);
-      setPipelineState({
-        currentStage: '',
-        stages: frontendStages,
-      });
+      setPipelineStatus(status);
 
-      // If pipeline has completed stages, show results
-      if (status.ml_scoring === 'COMPLETED' || status.graph_analysis === 'COMPLETED') {
-        // For now, we'll need to fetch results from another endpoint or use cached data
-        // This will be populated when the pipeline run API returns results
+      // Derive upload status from backend state
+      if (status.upload_status === 'COMPLETED') {
+        setUploadStatus('UPLOADED');
+      } else if (status.upload_status === 'FAILED') {
+        setUploadStatus('FAILED');
       }
     } catch (err) {
       console.error('Failed to load pipeline status:', err);
-      // Keep default pending state on error - don't crash the component
+      setError('Failed to load pipeline status');
     }
   };
 
-  // Check if all required files are uploaded and valid
-  const allFilesUploaded = REQUIRED_DATASETS.every(d => files[d.key]);
+  // Check if all required files are selected
+  const allFilesSelected = REQUIRED_DATASETS.every(d => files[d.key]);
   const allFilesValid = REQUIRED_DATASETS.every(d => {
     const file = files[d.key];
     return file && file.name.endsWith('.csv');
   });
 
-  const canRunPipeline = allFilesUploaded && allFilesValid;
+  const canUpload = allFilesSelected && allFilesValid;
+  const canRunPipeline = pipelineStatus?.upload_status === 'COMPLETED' && !runningPipeline;
+  const showResetButton = pipelineStatus?.upload_status === 'COMPLETED' && !runningPipeline && !uploading;
 
   const handleFileChange = (key: string) => (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -116,56 +91,32 @@ export default function DataPipeline() {
       }
       setError(null);
       setFiles(prev => ({ ...prev, [key]: file }));
-      setUploadedDatasets(prev => ({
-        ...prev,
-        [key]: {
-          name: file.name,
-          fileSize: file.size,
-        },
-      }));
     }
   };
 
   const handleUpload = async () => {
-    if (!canRunPipeline) return;
+    if (!canUpload) return;
 
     try {
-      setLoading(true);
+      setUploading(true);
+      setUploadStatus('UPLOADING');
       setError(null);
 
-      // Call real backend API
-      const result = await pipelineApi.uploadData({
+      await pipelineApi.uploadData({
         users: files.users,
         devices: files.devices,
         trades: files.trades,
         withdrawals: files.withdrawals,
       });
 
-      // Update uploaded datasets with server response
-      const now = new Date().toISOString();
-      setUploadedDatasets(
-        REQUIRED_DATASETS.reduce((acc, ds) => {
-          const file = files[ds.key];
-          const recordCount = result.records_imported[ds.key];
-          return {
-            ...acc,
-            [ds.key]: {
-              name: file?.name || 'Uploaded',
-              fileSize: file?.size,
-              uploadedAt: now,
-              records: recordCount,
-            },
-          };
-        }, {})
-      );
-
-      // Reload pipeline status to get latest state
-      // This will properly set Data Sources to COMPLETED only if all files are uploaded
+      // Reload status from backend after successful upload
       await loadPipelineStatus();
+      setUploadStatus('UPLOADED');
     } catch (err: any) {
       setError(err.message || 'Upload failed');
+      setUploadStatus('FAILED');
     } finally {
-      setLoading(false);
+      setUploading(false);
     }
   };
 
@@ -173,90 +124,60 @@ export default function DataPipeline() {
     if (!canRunPipeline) return;
 
     try {
-      setLoading(true);
+      setRunningPipeline(true);
       setError(null);
 
-      // Call real backend API to run pipeline
-      const result = await pipelineApi.runPipeline({
+      await pipelineApi.runPipeline({
         run_full_pipeline: true,
         generate_risk_events: true,
       });
 
-      // Update pipeline state based on backend response
-      // The backend returns steps with their statuses
-      const updatedStages: Record<string, 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED'> = {
-        data_sources: result.steps?.data_sources || 'PENDING',
-        validation: 'PENDING',
-        features: 'PENDING',
-        scoring: 'PENDING',
-        graph: 'PENDING',
-        decision: 'PENDING',
-      };
-
-      // Process backend response steps
-      if (result.steps) {
-        if (result.steps.dataset_validation === 'COMPLETED') {
-          updatedStages.validation = 'COMPLETED';
-        } else if (result.steps.dataset_validation === 'RUNNING') {
-          updatedStages.validation = 'RUNNING';
-        } else if (result.steps.dataset_validation === 'FAILED') {
-          updatedStages.validation = 'FAILED';
-        }
-
-        if (result.steps.feature_engineering === 'COMPLETED') {
-          updatedStages.features = 'COMPLETED';
-        } else if (result.steps.feature_engineering === 'RUNNING') {
-          updatedStages.features = 'RUNNING';
-        } else if (result.steps.feature_engineering === 'FAILED') {
-          updatedStages.features = 'FAILED';
-        }
-
-        if (result.steps.ml_scoring === 'COMPLETED') {
-          updatedStages.scoring = 'COMPLETED';
-        } else if (result.steps.ml_scoring === 'RUNNING') {
-          updatedStages.scoring = 'RUNNING';
-        } else if (result.steps.ml_scoring === 'FAILED') {
-          updatedStages.scoring = 'FAILED';
-        }
-
-        if (result.steps.graph_analysis === 'COMPLETED') {
-          updatedStages.graph = 'COMPLETED';
-        } else if (result.steps.graph_analysis === 'RUNNING') {
-          updatedStages.graph = 'RUNNING';
-        } else if (result.steps.graph_analysis === 'FAILED') {
-          updatedStages.graph = 'FAILED';
-        }
-
-        // Decision engine depends on ML scoring completion
-        if (result.steps.ml_scoring === 'COMPLETED') {
-          updatedStages.decision = 'COMPLETED';
-        }
-      }
-
-      setPipelineState({
-        currentStage: '',
-        stages: updatedStages,
-        results: result.final_counts ? {
-          totalRecords: result.final_counts.total_records,
-          highRiskCount: result.final_counts.high_risk_accounts,
-          fraudNetworks: result.final_counts.suspicious_clusters,
-          generatedAt: result.completed_at || new Date().toISOString(),
-        } : undefined,
-      });
-
-      // Reload pipeline status to get latest state
+      // Reload status from backend after pipeline completes
       await loadPipelineStatus();
-
     } catch (err: any) {
       setError(err.message || 'Pipeline execution failed');
-      // Set failed stage based on error
-      setPipelineState(prev => ({
-        ...prev,
-        stages: { ...prev.stages, [prev.currentStage]: 'FAILED' },
-      }));
     } finally {
-      setLoading(false);
+      setRunningPipeline(false);
     }
+  };
+
+  const handleReset = async () => {
+    try {
+      setUploading(true);
+      setError(null);
+
+      await pipelineApi.resetPipeline();
+
+      // Clear local state
+      setFiles({});
+      setUploadStatus('INITIAL');
+
+      // Reload status from backend
+      await loadPipelineStatus();
+    } catch (err: any) {
+      setError(err.message || 'Reset failed');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  // Map backend status to frontend stages
+  const getStageStatus = (stageId: string): 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' => {
+    if (!pipelineStatus) return 'PENDING';
+
+    const statusMap: Record<string, string> = {
+      'data_sources': pipelineStatus.data_sources,
+      'validation': pipelineStatus.dataset_validation,
+      'features': pipelineStatus.feature_engineering,
+      'scoring': pipelineStatus.ml_scoring,
+      'graph': pipelineStatus.graph_analysis,
+      'decision': pipelineStatus.ml_scoring === 'COMPLETED' ? 'COMPLETED' : 'PENDING',
+    };
+
+    const status = statusMap[stageId];
+    return (status === 'PENDING' || status === 'RUNNING' || status === 'COMPLETED' || status === 'FAILED')
+      ? status
+      : 'PENDING';
   };
 
   const formatFileSize = (bytes: number) => {
@@ -269,14 +190,38 @@ export default function DataPipeline() {
     return new Date(isoString).toLocaleString();
   };
 
+  // Derive uploaded datasets info from backend
+  const getUploadedDatasetInfo = (key: string) => {
+    if (!pipelineStatus?.upload_counts) return null;
+    const count = pipelineStatus.upload_counts[key as keyof typeof pipelineStatus.upload_counts];
+    if (!count) return null;
+
+    return {
+      name: `${key.charAt(0).toUpperCase() + key.slice(1)}.csv`,
+      records: count,
+      uploadedAt: pipelineStatus.upload_timestamp,
+    };
+  };
+
   return (
     <div className="space-y-8">
       {/* Page Header */}
-      <div>
-        <h1 className="text-2xl font-semibold text-slate-900">Risk Data Pipeline</h1>
-        <p className="text-sm text-slate-600 mt-1">
-          Batch CSV upload and risk analysis processing workflow
-        </p>
+      <div className="flex justify-between items-start">
+        <div>
+          <h1 className="text-2xl font-semibold text-slate-900">Risk Data Pipeline</h1>
+          <p className="text-sm text-slate-600 mt-1">
+            Batch CSV upload and risk analysis processing workflow
+          </p>
+        </div>
+        {showResetButton && (
+          <Button
+            onClick={handleReset}
+            disabled={uploading || runningPipeline}
+            variant="secondary"
+          >
+            Reset Pipeline
+          </Button>
+        )}
       </div>
 
       {/* Data Upload Section */}
@@ -291,50 +236,80 @@ export default function DataPipeline() {
         {/* Required Dataset Upload Cards */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           {REQUIRED_DATASETS.map((dataset) => {
-            const uploaded = uploadedDatasets[dataset.key];
+            // Check both backend uploaded state and local file selection
+            const uploadedInfo = uploadStatus === 'UPLOADED' ? getUploadedDatasetInfo(dataset.key) : null;
+            const isUploaded = !!uploadedInfo;
+            const selectedFile = files[dataset.key];
+            const isLocallySelected = !!selectedFile;
 
             return (
               <div
                 key={dataset.key}
-                className={`border rounded-lg p-4 transition-all ${
-                  uploaded ? 'border-green-300 bg-green-50/50' : 'border-slate-200'
+                className={`border rounded-lg p-4 transition-all flex flex-col ${
+                  isUploaded ? 'border-green-300 bg-green-50/50' :
+                  isLocallySelected ? 'border-blue-300 bg-blue-50/50' :
+                  'border-slate-200'
                 }`}
               >
-                <div className="flex items-center gap-3 mb-3">
-                  <div className="text-2xl">{dataset.icon}</div>
-                  <div className="flex-1">
+                <div className="flex items-start gap-3 mb-3">
+                  <div className="text-2xl shrink-0">{dataset.icon}</div>
+                  <div className="flex-1 min-w-0">
                     <label className="block text-sm font-medium text-slate-900">{dataset.label}</label>
-                    <p className="text-xs text-slate-500">{dataset.description}</p>
+                    <p className="text-xs text-slate-500 leading-tight mt-0.5">{dataset.description}</p>
                   </div>
-                  {uploaded && (
-                    <div className="text-green-600 text-sm">✓</div>
+                  {isUploaded && (
+                    <div className="text-green-600 text-sm shrink-0">✓</div>
+                  )}
+                  {isLocallySelected && !isUploaded && (
+                    <div className="text-blue-600 text-sm shrink-0">📄</div>
                   )}
                 </div>
 
-                {uploaded ? (
-                  <div className="space-y-1 text-xs text-slate-600">
-                    <div className="font-medium">{uploaded.name}</div>
-                    {uploaded.fileSize && (
-                      <div className="text-slate-500">{formatFileSize(uploaded.fileSize)}</div>
-                    )}
-                    {uploaded.uploadedAt && (
-                      <div className="text-slate-500">{formatTimestamp(uploaded.uploadedAt)}</div>
+                {isUploaded && uploadedInfo ? (
+                  // Show uploaded info from backend
+                  <div className="space-y-1 text-xs text-slate-600 mt-auto">
+                    <div className="font-medium">{uploadedInfo.name}</div>
+                    <div className="text-slate-500">{uploadedInfo.records?.toLocaleString()} records</div>
+                    {uploadedInfo.uploadedAt && (
+                      <div className="text-slate-500">{formatTimestamp(uploadedInfo.uploadedAt)}</div>
                     )}
                   </div>
+                ) : isLocallySelected ? (
+                  // Show locally selected file info
+                  <div className="space-y-1 text-xs text-slate-600 mt-auto">
+                    <div className="font-medium text-blue-700">{selectedFile.name}</div>
+                    <div className="text-slate-500">{formatFileSize(selectedFile.size)}</div>
+                    <button
+                      onClick={() => {
+                        setFiles(prev => {
+                          const newFiles = { ...prev };
+                          delete newFiles[dataset.key];
+                          return newFiles;
+                        });
+                      }}
+                      className="text-red-600 hover:text-red-700 underline"
+                      disabled={uploading || runningPipeline}
+                    >
+                      Remove
+                    </button>
+                  </div>
                 ) : (
-                  <input
-                    type="file"
-                    accept=".csv"
-                    onChange={handleFileChange(dataset.key)}
-                    disabled={loading}
-                    className="block w-full text-sm text-slate-500
-                      file:mr-4 file:py-2 file:px-4
-                      file:rounded-md file:border-0
-                      file:text-sm file:font-semibold
-                      file:bg-blue-50 file:text-blue-700
-                      hover:file:bg-blue-100
-                      disabled:opacity-50"
-                  />
+                  // Show file input
+                  <div className="mt-auto">
+                    <input
+                      type="file"
+                      accept=".csv"
+                      onChange={handleFileChange(dataset.key)}
+                      disabled={uploading || runningPipeline || uploadStatus === 'UPLOADED'}
+                      className="block w-full text-sm text-slate-500
+                        file:mr-4 file:py-2 file:px-4
+                        file:rounded-md file:border-0
+                        file:text-sm file:font-semibold
+                        file:bg-blue-50 file:text-blue-700
+                        hover:file:bg-blue-100
+                        disabled:opacity-50"
+                    />
+                  </div>
                 )}
               </div>
             );
@@ -350,17 +325,19 @@ export default function DataPipeline() {
         <div className="mt-6 flex gap-3">
           <Button
             onClick={handleUpload}
-            disabled={!canRunPipeline || loading}
-            isLoading={loading}
+            disabled={!canUpload || uploading || runningPipeline || uploadStatus === 'UPLOADED'}
+            isLoading={uploading}
           >
-            {loading ? 'Uploading...' : 'Upload Datasets'}
+            {uploadStatus === 'UPLOADED' ? 'Datasets Uploaded ✓' :
+             uploading ? 'Uploading...' :
+             'Upload Datasets'}
           </Button>
-          {allFilesUploaded && !allFilesValid && (
+          {allFilesSelected && !allFilesValid && (
             <div className="flex items-center text-sm text-orange-700">
               ⚠ All files must be CSV format
             </div>
           )}
-          {!allFilesUploaded && (
+          {!allFilesSelected && uploadStatus === 'INITIAL' && (
             <div className="flex items-center text-sm text-slate-500">
               {REQUIRED_DATASETS.filter(d => !files[d.key]).length} datasets remaining
             </div>
@@ -380,14 +357,16 @@ export default function DataPipeline() {
         {/* Pipeline Stage Cards - Identical Dimensions */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {PIPELINE_STAGES.map((stage) => {
-            const status = pipelineState.stages[stage.id];
-            const isRunning = pipelineState.currentStage === stage.id;
+            const status = getStageStatus(stage.id);
 
             return (
               <div
                 key={stage.id}
                 className={`bg-white rounded-lg border p-4 h-[140px] flex flex-col transition-all ${
-                  isRunning ? 'border-blue-400 bg-blue-50/30' : 'border-slate-200'
+                  status === 'COMPLETED' ? 'border-green-200 bg-green-50/30' :
+                  status === 'RUNNING' ? 'border-blue-400 bg-blue-50/30' :
+                  status === 'FAILED' ? 'border-red-200 bg-red-50/30' :
+                  'border-slate-200'
                 }`}
               >
                 <div className="flex items-center justify-between mb-3">
@@ -410,7 +389,7 @@ export default function DataPipeline() {
 
                 <div className="flex-1 flex flex-col justify-center">
                   <p className="text-xs text-slate-600 mb-2">{stage.description}</p>
-                  {isRunning && (
+                  {status === 'RUNNING' && (
                     <div className="w-full bg-slate-200 rounded-full h-1.5 overflow-hidden">
                       <div className="bg-blue-600 h-full rounded-full animate-pulse" style={{ width: '60%' }}></div>
                     </div>
@@ -422,28 +401,55 @@ export default function DataPipeline() {
         </div>
       </section>
 
-      {/* Pipeline Results */}
-      {pipelineState.results && (
+      {/* Pipeline Run Summary */}
+      {pipelineStatus?.results && (
         <section className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg p-6">
-          <h2 className="text-lg font-semibold text-slate-900 mb-4">Pipeline Results</h2>
+          <div className="flex items-start justify-between mb-4">
+            <h2 className="text-lg font-semibold text-slate-900">Pipeline Run Summary</h2>
+            <button
+              onClick={() => navigate('/')}
+              className="text-sm text-blue-600 hover:text-blue-700 hover:underline flex items-center gap-1"
+            >
+              Go to Risk Overview for charts and case queue
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+              </svg>
+            </button>
+          </div>
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            <div className="bg-white rounded-lg border border-slate-200 p-4">
+            <div className="bg-white rounded-lg border border-slate-200 p-4 h-[140px] flex flex-col">
               <div className="text-xs text-slate-600 mb-1">Total Records</div>
-              <div className="text-2xl font-bold text-slate-900">{pipelineState.results.totalRecords?.toLocaleString()}</div>
+              <div className="text-xs text-slate-400 mb-2">Rows ingested from uploaded datasets</div>
+              <div className="flex-1" />
+              <div className="text-2xl font-bold text-slate-900">{pipelineStatus.results.total_records?.toLocaleString()}</div>
             </div>
-            <div className="bg-white rounded-lg border border-slate-200 p-4">
-              <div className="text-xs text-slate-600 mb-1">High Risk Accounts</div>
-              <div className="text-2xl font-bold text-red-600">{pipelineState.results.highRiskCount?.toLocaleString()}</div>
+            <div className="bg-white rounded-lg border border-slate-200 p-4 h-[140px] flex flex-col">
+              <div className="text-xs text-slate-600 mb-1">Users Processed</div>
+              <div className="text-xs text-slate-400 mb-2">Unique accounts scored in this run</div>
+              <div className="flex-1" />
+              <div className="text-2xl font-bold text-slate-900">{pipelineStatus.results.feature_vectors_generated?.toLocaleString()}</div>
             </div>
-            <div className="bg-white rounded-lg border border-slate-200 p-4">
-              <div className="text-xs text-slate-600 mb-1">Fraud Networks</div>
-              <div className="text-2xl font-bold text-slate-900">{pipelineState.results.fraudNetworks?.toLocaleString()}</div>
+            <div className="bg-white rounded-lg border border-slate-200 p-4 h-[140px] flex flex-col">
+              <SimpleMetricTooltip
+                metric="Accounts in Suspicious Clusters"
+                definition="Accounts linked to suspicious clusters via device/IP or behavioral patterns"
+              >
+                <div className="text-xs text-slate-600 mb-1">Accounts in Suspicious Clusters</div>
+                <div className="text-xs text-slate-400 mb-2">Accounts linked to suspicious clusters via device/IP or behavioral patterns</div>
+              </SimpleMetricTooltip>
+              <div className="flex-1" />
+              <div className="text-2xl font-bold text-red-600">{pipelineStatus.results.risky_accounts_detected?.toLocaleString()}</div>
             </div>
-            <div className="bg-white rounded-lg border border-slate-200 p-4">
-              <div className="text-xs text-slate-600 mb-1">Generated</div>
-              <div className="text-sm font-medium text-slate-900">
-                {pipelineState.results.generatedAt ? formatTimestamp(pipelineState.results.generatedAt) : '-'}
-              </div>
+            <div className="bg-white rounded-lg border border-slate-200 p-4 h-[140px] flex flex-col">
+              <SimpleMetricTooltip
+                metric="Suspicious Clusters Detected"
+                definition="Distinct suspicious network clusters identified"
+              >
+                <div className="text-xs text-slate-600 mb-1">Suspicious Clusters Detected</div>
+                <div className="text-xs text-slate-400 mb-2">Distinct suspicious network clusters identified</div>
+              </SimpleMetricTooltip>
+              <div className="flex-1" />
+              <div className="text-2xl font-bold text-slate-900">{pipelineStatus.results.fraud_networks?.toLocaleString()}</div>
             </div>
           </div>
         </section>
@@ -451,7 +457,7 @@ export default function DataPipeline() {
 
       {/* Pipeline Execution */}
       <section className={`bg-white border rounded-lg p-6 ${
-        Object.values(pipelineState.stages).some(s => s === 'COMPLETED')
+        pipelineStatus?.ml_scoring === 'COMPLETED'
           ? 'border-green-200 bg-green-50/30'
           : 'border-slate-200'
       }`}>
@@ -464,10 +470,10 @@ export default function DataPipeline() {
           </div>
           <Button
             onClick={handleRunPipeline}
-            disabled={!canRunPipeline || loading}
-            isLoading={loading}
+            disabled={!canRunPipeline}
+            isLoading={runningPipeline}
           >
-            {loading ? 'Processing...' : 'Run Pipeline'}
+            {runningPipeline ? 'Processing...' : 'Run Pipeline'}
           </Button>
         </div>
       </section>

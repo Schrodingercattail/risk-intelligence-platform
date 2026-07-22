@@ -1,13 +1,57 @@
 import { Outlet, Link, useLocation } from 'react-router-dom'
+import { useState, useEffect } from 'react'
+import { pipelineApi } from '../../services/api'
 
 export default function Layout() {
   const location = useLocation()
+  const [datasetInfo, setDatasetInfo] = useState<{
+    generated: string | null
+    totalRecords: number
+  }>({ generated: null, totalRecords: 0 })
+
+  useEffect(() => {
+    const fetchDatasetInfo = async () => {
+      try {
+        const status = await pipelineApi.getStatus()
+        if (status.upload_timestamp) {
+          // Format timestamp for display
+          const date = new Date(status.upload_timestamp)
+          const formatted = date.toLocaleString('en-US', {
+            month: 'short',
+            day: 'numeric',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+          })
+          setDatasetInfo({
+            generated: formatted,
+            totalRecords: status.results?.total_records || 0
+          })
+        } else {
+          // Reset when no data
+          setDatasetInfo({
+            generated: null,
+            totalRecords: 0
+          })
+        }
+      } catch (err) {
+        // Keep default values if API fails
+        console.error('Failed to fetch dataset info:', err)
+      }
+    }
+    fetchDatasetInfo()
+
+    // Also set up periodic refresh (every 10 seconds)
+    const interval = setInterval(fetchDatasetInfo, 10000)
+
+    return () => clearInterval(interval)
+  }, [location.pathname]) // Refresh on route change
 
   const navItems = [
     { path: '/', label: 'Risk Overview', icon: '📊' },
     { path: '/investigation', label: 'Investigation', icon: '🔍' },
     { path: '/pipeline', label: 'Data Pipeline', icon: '🔄' },
-    { path: '/model', label: 'AI Model Health', icon: '🧠' },
+    { path: '/model', label: 'Model Monitoring', icon: '🧠' },
   ]
 
   return (
@@ -20,14 +64,14 @@ export default function Layout() {
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-2">
                 <div className="w-8 h-8 bg-gradient-to-br from-blue-600 to-indigo-700 rounded-lg flex items-center justify-center">
-                  <span className="text-white text-sm font-bold">AI</span>
+                  <span className="text-white text-sm font-bold">ML</span>
                 </div>
                 <div>
                   <h1 className="text-lg font-semibold text-slate-900">
-                    AI Risk Command Center
+                    Risk Intelligence Platform
                   </h1>
                   <p className="text-xs text-slate-500">
-                    AI-powered risk assessment and analytics platform
+                    Machine Learning–Driven Detection, Monitoring & Investigation
                   </p>
                 </div>
               </div>
@@ -75,7 +119,15 @@ export default function Layout() {
                 </div>
                 <div className="flex justify-between">
                   <span className="text-slate-500">Generated:</span>
-                  <span className="text-slate-700">Jul 15, 2026 14:32</span>
+                  <span className="text-slate-700">
+                    {datasetInfo.generated || 'No data uploaded'}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Records:</span>
+                  <span className="text-slate-700">
+                    {datasetInfo.totalRecords > 0 ? datasetInfo.totalRecords.toLocaleString() : 'N/A'}
+                  </span>
                 </div>
               </div>
             </div>

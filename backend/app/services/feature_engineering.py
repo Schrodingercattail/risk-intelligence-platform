@@ -29,11 +29,52 @@ class FeatureEngineeringService:
     - Temporal Features
     - Withdrawal Features
     - Cluster Features
+
+    IMPORTANT: This service uses the same feature calculation logic as training
+    to ensure training-serving consistency. The reference_time is derived from
+    the data itself (max timestamp) rather than datetime.now().
     """
 
     def __init__(self, db: AsyncSession):
         """Initialize feature engineering service."""
         self.db = db
+        self._reference_time = None
+
+    async def _get_reference_time(self) -> datetime:
+        """
+        Get reference time from database data.
+
+        Uses max timestamp from trades and withdrawals, just like training flow.
+        This ensures PSI calculations compare equivalent populations.
+
+        Returns:
+            Reference time for feature calculation
+        """
+        if self._reference_time is not None:
+            return self._reference_time
+
+        # Get max timestamp from trades
+        max_trade_time = await self.db.scalar(select(func.max(Trade.timestamp)))
+
+        # Get max timestamp from withdrawals
+        max_withdrawal_time = await self.db.scalar(select(func.max(Withdrawal.timestamp)))
+
+        # Use the later of the two
+        if max_trade_time and max_withdrawal_time:
+            self._reference_time = max(max_trade_time, max_withdrawal_time)
+        elif max_trade_time:
+            self._reference_time = max_trade_time
+        elif max_withdrawal_time:
+            self._reference_time = max_withdrawal_time
+        else:
+            # Fallback to current time if no data
+            self._reference_time = datetime.now(timezone.utc)
+
+        # Strip timezone for consistency with training flow
+        if self._reference_time.tzinfo is not None:
+            self._reference_time = self._reference_time.replace(tzinfo=None)
+
+        return self._reference_time
 
     async def generate_features_for_all_users(self) -> int:
         """
@@ -42,23 +83,31 @@ class FeatureEngineeringService:
         Returns:
             Number of users processed
         """
+        # Get reference time from data (not datetime.now!)
+        reference_time = await self._get_reference_time()
+
         # Get all users
         result = await self.db.execute(select(User.user_id))
         user_ids = [row[0] for row in result]
 
         count = 0
         for user_id in user_ids:
-            await self.generate_features_for_user(user_id)
+            await self.generate_features_for_user(user_id, reference_time)
             count += 1
 
         return count
 
-    async def generate_features_for_user(self, user_id: str) -> FeatureTable:
+    async def generate_features_for_user(
+        self,
+        user_id: str,
+        reference_time: datetime = None
+    ) -> FeatureTable:
         """
         Generate features for a single user.
 
         Args:
             user_id: User ID to generate features for
+            reference_time: Reference time for time-based features (optional, uses data max if None)
 
         Returns:
             FeatureTable record with all features
@@ -68,8 +117,15 @@ class FeatureEngineeringService:
         if not user:
             raise ValueError(f"User {user_id} not found")
 
+        # Get reference time if not provided
+        if reference_time is None:
+            reference_time = await self._get_reference_time()
+        elif reference_time.tzinfo is not None:
+            # Strip timezone for consistency
+            reference_time = reference_time.replace(tzinfo=None)
+
         # Calculate features
-        features = await self._calculate_all_features(user_id)
+        features = await self._calculate_all_features(user_id, reference_time)
 
         # Create or update feature record
         feature_record = await self.db.get(FeatureTable, user_id)
@@ -89,9 +145,17 @@ class FeatureEngineeringService:
 
         return feature_record
 
-    async def _calculate_all_features(self, user_id: str) -> Dict[str, Any]:
+    async def _calculate_all_features(
+        self,
+        user_id: str,
+        reference_time: datetime
+    ) -> Dict[str, Any]:
         """
         Calculate all features for a user.
+
+        Args:
+            user_id: User ID
+            reference_time: Reference time for time-based features
 
         Returns:
             Dictionary of feature names to values
@@ -104,17 +168,17 @@ class FeatureEngineeringService:
 
         features = {}
 
-        # Device & Network Features
+        # Device & Network Features (time-independent)
         features.update(await self._device_features(user_id, devices, trades))
 
-        # Trading Features
-        features.update(await self._trading_features(user_id, trades))
+        # Trading Features (uses reference_time for windows)
+        features.update(await self._trading_features(user_id, trades, reference_time))
 
-        # Temporal Features
-        features.update(await self._temporal_features(user, trades, withdrawals))
+        # Temporal Features (uses reference_time for age calculation)
+        features.update(await self._temporal_features(user, trades, withdrawals, reference_time))
 
-        # Withdrawal Features
-        features.update(await self._withdrawal_features(withdrawals))
+        # Withdrawal Features (uses reference_time for windows)
+        features.update(await self._withdrawal_features(withdrawals, reference_time))
 
         # Cluster features (placeholder - will be populated by graph analysis)
         features["cluster_size"] = None
@@ -147,9 +211,20 @@ class FeatureEngineeringService:
     async def _trading_features(
         self,
         user_id: str,
-        trades: List[Trade]
+        trades: List[Trade],
+        reference_time: datetime
     ) -> Dict[str, Any]:
-        """Calculate trading behavior features."""
+        """
+        Calculate trading behavior features.
+
+        Args:
+            user_id: User ID
+            trades: List of Trade objects
+            reference_time: Reference time for time window calculations
+
+        Returns:
+            Dict with trading features
+        """
         if not trades:
             return {
                 "trade_frequency_24h": 0,
@@ -159,13 +234,17 @@ class FeatureEngineeringService:
                 "trade_volume_24h": Decimal("0"),
             }
 
-        now = datetime.now(timezone.utc)
+        # Trade frequency using reference_time
+        trades_24h = [
+            t for t in trades
+            if (reference_time - t.timestamp.replace(tzinfo=None)).total_seconds() <= 86400
+        ]
+        trades_7d = [
+            t for t in trades
+            if (reference_time - t.timestamp.replace(tzinfo=None)).total_seconds() <= 604800
+        ]
 
-        # Trade frequency
-        trades_24h = [t for t in trades if (now - t.timestamp).total_seconds() <= 86400]
-        trades_7d = [t for t in trades if (now - t.timestamp).total_seconds() <= 604800]
-
-        # Average trade size
+        # Average trade size (all trades, not time-windowed)
         trade_sizes = [float(t.price) * float(t.quantity) for t in trades]
         avg_trade_size = sum(trade_sizes) / len(trade_sizes) if trade_sizes else 0
 
@@ -178,7 +257,9 @@ class FeatureEngineeringService:
         # Opposite trade ratio (simplified - checks for both BUY and SELL)
         sides = [t.side for t in trades]
         if len(sides) >= 2 and "BUY" in sides and "SELL" in sides:
-            opposite_trade_ratio = Decimal("0.5")  # Placeholder
+            buy_count = sides.count("BUY")
+            sell_count = sides.count("SELL")
+            opposite_trade_ratio = Decimal(str(min(buy_count, sell_count) / len(sides)))
         else:
             opposite_trade_ratio = Decimal("0")
 
@@ -194,22 +275,32 @@ class FeatureEngineeringService:
         self,
         user: User,
         trades: List[Trade],
-        withdrawals: List[Withdrawal]
+        withdrawals: List[Withdrawal],
+        reference_time: datetime
     ) -> Dict[str, Any]:
-        """Calculate temporal features."""
-        now = datetime.now(timezone.utc)
+        """
+        Calculate temporal features.
 
-        # Account age
+        Args:
+            user: User object
+            trades: List of Trade objects
+            withdrawals: List of Withdrawal objects
+            reference_time: Reference time for age calculation
+
+        Returns:
+            Dict with temporal features
+        """
+        # Account age using reference_time
         account_age_days = 0
         if user.account_created_time:
-            account_age_days = (now - user.account_created_time).days
+            account_age_days = (reference_time - user.account_created_time.replace(tzinfo=None)).days
 
-        # Active days count
+        # Active days count (time-independent, just counts unique dates)
         active_days = set()
         for t in trades:
-            active_days.add(t.timestamp.date())
+            active_days.add(t.timestamp.replace(tzinfo=None).date())
         for w in withdrawals:
-            active_days.add(w.timestamp.date())
+            active_days.add(w.timestamp.replace(tzinfo=None).date())
 
         return {
             "account_age_days": account_age_days,
@@ -218,22 +309,31 @@ class FeatureEngineeringService:
 
     async def _withdrawal_features(
         self,
-        withdrawals: List[Withdrawal]
+        withdrawals: List[Withdrawal],
+        reference_time: datetime
     ) -> Dict[str, Any]:
-        """Calculate withdrawal behavior features."""
+        """
+        Calculate withdrawal behavior features.
+
+        Args:
+            withdrawals: List of Withdrawal objects
+            reference_time: Reference time for time window calculations
+
+        Returns:
+            Dict with withdrawal features
+        """
         if not withdrawals:
             return {
                 "withdrawal_risk_score": Decimal("0"),
                 "withdrawal_frequency_24h": 0,
+                "withdrawal_volume_24h": Decimal("0"),
                 "first_withdrawal_flag": False,
             }
 
-        now = datetime.now(timezone.utc)
-
-        # Withdrawal frequency
+        # Withdrawal frequency using reference_time
         withdrawals_24h = [
             w for w in withdrawals
-            if (now - w.timestamp).total_seconds() <= 86400
+            if (reference_time - w.timestamp.replace(tzinfo=None)).total_seconds() <= 86400
         ]
 
         # First withdrawal flag (is any withdrawal to new address?)

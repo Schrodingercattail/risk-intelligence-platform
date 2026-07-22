@@ -1,7 +1,8 @@
 /**
- * Detection Source Analysis Chart Component
+ * Detection Attribution Chart Component
  *
- * Displays detection source distribution bar chart.
+ * Displays detection source contribution as a horizontal bar chart.
+ * Shows how many risky accounts were identified by each detection method.
  */
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell } from 'recharts';
 
@@ -10,17 +11,36 @@ interface DetectionSourceChartProps {
 }
 
 const mockData = [
-  { name: 'Rule Engine', value: 45, percentage: 30, color: '#3b82f6' },
-  { name: 'LightGBM', value: 80, percentage: 55, color: '#8b5cf6' },
-  { name: 'Graph Network', value: 25, percentage: 15, color: '#06b6d4' },
+  { name: 'LightGBM Model', value: 400, percentage: 66.7, color: '#8b5cf6' },
+  { name: 'Rule Engine', value: 350, percentage: 58.3, color: '#3b82f6' },
+  { name: 'Graph Network', value: 250, percentage: 41.7, color: '#06b6d4' },
 ];
 
 export default function DetectionSourceChart({ data = mockData }: DetectionSourceChartProps) {
-  console.log('=== DetectionSourceChart Render ===');
-  console.log('Props received:', { data });
-  console.log('Data length:', data?.length);
-  console.log('First item:', data?.[0]);
-  console.log('All data items:', data);
+  // Custom tooltip to show both account count and percentage
+  const CustomTooltip = ({ active, payload }: any) => {
+    if (active && payload && payload.length) {
+      const data = payload[0].payload;
+      return (
+        <div style={{
+          backgroundColor: 'white',
+          border: '1px solid #e2e8f0',
+          borderRadius: '6px',
+          padding: '8px 12px',
+          fontSize: '12px',
+        }}>
+          <div style={{ fontWeight: '500', marginBottom: '4px' }}>{data.name}</div>
+          <div style={{ color: '#64748b' }}>
+            <span style={{ fontWeight: '500', color: '#334155' }}>{data.value}</span> accounts
+          </div>
+          <div style={{ color: '#64748b' }}>
+            <span style={{ fontWeight: '500', color: '#334155' }}>{data.percentage}%</span> contribution
+          </div>
+        </div>
+      );
+    }
+    return null;
+  };
 
   return (
     <div style={{ width: '100%', height: '250px', position: 'relative' }}>
@@ -47,16 +67,7 @@ export default function DetectionSourceChart({ data = mockData }: DetectionSourc
             tick={{ fontSize: 12 }}
             width={120}
           />
-          <Tooltip
-            contentStyle={{
-              backgroundColor: 'white',
-              border: '1px solid #e2e8f0',
-              borderRadius: '6px',
-              padding: '8px 12px',
-            }}
-            formatter={(value: any) => [`${value}%`, 'Detection Rate']}
-            labelFormatter={(label) => label}
-          />
+          <Tooltip content={<CustomTooltip />} />
           <Bar
             dataKey="percentage"
             fill="#3b82f6"

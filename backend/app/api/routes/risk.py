@@ -110,9 +110,9 @@ async def get_risk_overview(
     }
 
     # Risk score distribution - bucketed histogram
-    # Define buckets: 0-20, 20-40, 40-60, 60-80, 80-100
-    buckets = ["0-20", "20-40", "40-60", "60-80", "80-100"]
-    bucket_ranges = [(0, 20), (20, 40), (40, 60), (60, 80), (80, 100)]
+    # Define buckets: 0-20, 20-40, 40-60, 60-70, 70-85, 85-100
+    buckets = ["0-20", "20-40", "40-60", "60-70", "70-85", "85-100"]
+    bucket_ranges = [(0, 20), (20, 40), (40, 60), (60, 70), (70, 85), (85, 100)]
 
     risk_score_distribution = []
     for bucket_label, (lower, upper) in zip(buckets, bucket_ranges):
@@ -152,7 +152,7 @@ async def get_risk_overview(
 
     risk_score_statistics = {
         "average": round(average_score, 1),
-        "threshold": 80.0,
+        "threshold": settings.HIGH_RISK_THRESHOLD * 100,  # 70.0
         "maximum": round(max_score, 1)
     }
 
@@ -187,78 +187,149 @@ async def get_risk_overview(
         "total": total_accounts
     }
 
-    # Detection Source Analysis - read-only attribution from RiskEvent
-    # Detection Coverage Rate = (High-risk accounts detected by method / Total high-risk accounts) * 100
-    # Each bar shows independent coverage - users can be detected by multiple methods
-    # Detection attribution uses explicit thresholds defined in config
-    # Bars do NOT need to sum to 100%
-    total_high_risk = high_risk_accounts  # Already calculated as critical + high
+    # Detection Attribution Analysis - read-only attribution from RiskEvent
+    # NEW DEFINITION: Calculate from ALL accounts with at least one detection signal
+    # NOT limited to HIGH/CRITICAL risk levels
+    # Detection uses explicit thresholds defined in config
+
+    # Step 1: Find all accounts where at least one signal meets the threshold
+    from sqlalchemy import or_, and_
+    detected_accounts_cte = await db.execute(
+        select(func.distinct(User.user_id))
+        .join(RiskEvent, RiskEvent.user_id == User.user_id)
+        .where(
+            or_(
+                and_(RiskEvent.ml_score.isnot(None), RiskEvent.ml_score >= settings.DETECTION_ML_THRESHOLD),
+                and_(RiskEvent.rule_score.isnot(None), RiskEvent.rule_score >= settings.DETECTION_RULE_THRESHOLD),
+                and_(RiskEvent.graph_score.isnot(None), RiskEvent.graph_score >= settings.DETECTION_GRAPH_THRESHOLD)
+            )
+        )
+    )
+    detected_account_ids = [row[0] for row in detected_accounts_cte]
+    total_detected_accounts = len(detected_account_ids)
 
     detection_sources = []
-    if total_high_risk > 0:
-        # LightGBM: count HIGH/CRITICAL users where ML method triggered (ml_score >= threshold)
+    signal_combination_breakdown = None
+
+    if total_detected_accounts > 0:
+        # Step 2: Calculate detection attribution per method
+        # LightGBM: count detected users where ML signal triggered
         ml_detected_result = await db.execute(
             select(func.count(func.distinct(User.user_id)))
             .join(RiskEvent, RiskEvent.user_id == User.user_id)
-            .where(User.risk_level.in_([RiskLevel.HIGH.value, RiskLevel.CRITICAL.value]))
+            .where(User.user_id.in_(detected_account_ids))
             .where(RiskEvent.ml_score.isnot(None))
             .where(RiskEvent.ml_score >= settings.DETECTION_ML_THRESHOLD)
         )
         ml_detected = ml_detected_result.scalar() or 0
 
-        # Rule Engine: count HIGH/CRITICAL users where Rule method triggered (rule_score >= threshold)
+        # Rule Engine: count detected users where Rule signal triggered
         rule_detected_result = await db.execute(
             select(func.count(func.distinct(User.user_id)))
             .join(RiskEvent, RiskEvent.user_id == User.user_id)
-            .where(User.risk_level.in_([RiskLevel.HIGH.value, RiskLevel.CRITICAL.value]))
+            .where(User.user_id.in_(detected_account_ids))
             .where(RiskEvent.rule_score.isnot(None))
             .where(RiskEvent.rule_score >= settings.DETECTION_RULE_THRESHOLD)
         )
         rule_detected = rule_detected_result.scalar() or 0
 
-        # Graph Network: count HIGH/CRITICAL users where Graph method triggered (graph_score >= threshold)
+        # Graph Network: count detected users where Graph signal triggered
         graph_detected_result = await db.execute(
             select(func.count(func.distinct(User.user_id)))
             .join(RiskEvent, RiskEvent.user_id == User.user_id)
-            .where(User.risk_level.in_([RiskLevel.HIGH.value, RiskLevel.CRITICAL.value]))
+            .where(User.user_id.in_(detected_account_ids))
             .where(RiskEvent.graph_score.isnot(None))
             .where(RiskEvent.graph_score >= settings.DETECTION_GRAPH_THRESHOLD)
         )
         graph_detected = graph_detected_result.scalar() or 0
 
+        # Step 3: Calculate signal combination breakdown among detected accounts
+        # Use GROUP BY with MAX() to ensure each user is counted only once,
+        # even if they have multiple RiskEvent records
+        from sqlalchemy import case, cast, Integer
+        signal_query = await db.execute(
+            select(
+                User.user_id,
+                func.max(cast(case((RiskEvent.ml_score >= settings.DETECTION_ML_THRESHOLD, True), else_=False), Integer)).label('has_ml'),
+                func.max(cast(case((RiskEvent.rule_score >= settings.DETECTION_RULE_THRESHOLD, True), else_=False), Integer)).label('has_rule'),
+                func.max(cast(case((RiskEvent.graph_score >= settings.DETECTION_GRAPH_THRESHOLD, True), else_=False), Integer)).label('has_graph')
+            )
+            .join(RiskEvent, RiskEvent.user_id == User.user_id)
+            .where(User.user_id.in_(detected_account_ids))
+            .group_by(User.user_id)
+        )
+
+        ml_only = 0
+        rule_only = 0
+        graph_only = 0
+        multi_signal = 0
+
+        for row in signal_query:
+            has_ml = row.has_ml == 1
+            has_rule = row.has_rule == 1
+            has_graph = row.has_graph == 1
+
+            signal_count = sum([has_ml, has_rule, has_graph])
+
+            if signal_count == 1:
+                if has_ml:
+                    ml_only += 1
+                elif has_rule:
+                    rule_only += 1
+                elif has_graph:
+                    graph_only += 1
+            elif signal_count >= 2:
+                # Multi-signal accounts have 2 or more signals
+                multi_signal += 1
+
         detection_sources = [
             {
-                "method": "Rule Engine",
-                "detected_accounts": rule_detected,
-                "detection_rate": round((rule_detected / total_high_risk) * 100, 1),
-                "color": "#3b82f6"
-            },
-            {
                 "method": "LightGBM Model",
-                "detected_accounts": ml_detected,
-                "detection_rate": round((ml_detected / total_high_risk) * 100, 1),
+                "account_count": ml_detected,
+                "percentage": round((ml_detected / total_detected_accounts) * 100, 1),
                 "color": "#8b5cf6"
             },
             {
+                "method": "Rule Engine",
+                "account_count": rule_detected,
+                "percentage": round((rule_detected / total_detected_accounts) * 100, 1),
+                "color": "#3b82f6"
+            },
+            {
                 "method": "Graph Network",
-                "detected_accounts": graph_detected,
-                "detection_rate": round((graph_detected / total_high_risk) * 100, 1),
+                "account_count": graph_detected,
+                "percentage": round((graph_detected / total_detected_accounts) * 100, 1),
                 "color": "#06b6d4"
             }
         ]
+
+        signal_combination_breakdown = {
+            "ml_only": ml_only,
+            "rule_only": rule_only,
+            "graph_only": graph_only,
+            "multi_signal": multi_signal
+        }
     else:
         detection_sources = [
-            {"method": "Rule Engine", "detected_accounts": 0, "detection_rate": 0.0, "color": "#3b82f6"},
-            {"method": "LightGBM Model", "detected_accounts": 0, "detection_rate": 0.0, "color": "#8b5cf6"},
-            {"method": "Graph Network", "detected_accounts": 0, "detection_rate": 0.0, "color": "#06b6d4"}
+            {"method": "LightGBM Model", "account_count": 0, "percentage": 0.0, "color": "#8b5cf6"},
+            {"method": "Rule Engine", "account_count": 0, "percentage": 0.0, "color": "#3b82f6"},
+            {"method": "Graph Network", "account_count": 0, "percentage": 0.0, "color": "#06b6d4"}
         ]
+
+        signal_combination_breakdown = {
+            "ml_only": 0,
+            "rule_only": 0,
+            "graph_only": 0,
+            "multi_signal": 0
+        }
 
     return RiskOverviewResponse(
         summary=executive_summary,
         risk_score_distribution=risk_score_distribution,
         risk_score_statistics=risk_score_statistics,
         risk_level_composition=risk_level_composition,
-        detection_sources=detection_sources
+        detection_sources=detection_sources,
+        signal_combination_breakdown=signal_combination_breakdown
     )
 
 
@@ -266,15 +337,23 @@ async def get_risk_overview(
 async def get_risk_events(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=1000),
-    risk_level: Optional[str] = Query(None),
-    status: Optional[str] = Query(None),
+    risk_level: Optional[str] = Query(None, description="Filter by risk level (LOW, MEDIUM, HIGH, CRITICAL)"),
+    pipeline_run_id: Optional[str] = Query(None, description="Filter by pipeline run ID - returns events from a specific batch"),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get paginated list of risk events."""
+    """
+    Get paginated list of risk events.
+
+    By default, returns the most recent events across all pipeline runs.
+    Use pipeline_run_id to filter events from a specific batch.
+    """
     query = select(RiskEvent).order_by(desc(RiskEvent.detected_at))
 
     if risk_level:
         query = query.where(RiskEvent.risk_level == risk_level)
+
+    if pipeline_run_id:
+        query = query.where(RiskEvent.pipeline_run_id == pipeline_run_id)
 
     # Get total count
     count_result = await db.execute(select(func.count()).select_from(query.subquery()))

@@ -20,14 +20,15 @@ interface RiskScoreDistributionChartProps {
 const mockData: Bucket[] = [
   { range: '0-20', count: 320, percentage: 16.0 },
   { range: '20-40', count: 480, percentage: 24.0 },
-  { range: '40-60', count: 560, percentage: 28.0 },
-  { range: '60-80', count: 380, percentage: 19.0 },
-  { range: '80-100', count: 260, percentage: 13.0 },
+  { range: '40-60', count: 520, percentage: 26.0 },
+  { range: '60-70', count: 240, percentage: 12.0 },
+  { range: '70-85', count: 200, percentage: 10.0 },
+  { range: '85-100', count: 240, percentage: 12.0 },
 ];
 
 export default function RiskScoreDistributionChart({
   data = mockData,
-  highRiskThreshold = 80,
+  highRiskThreshold = 70,
   totalUsers,
 }: RiskScoreDistributionChartProps) {
   // Find which bucket contains the threshold
@@ -38,27 +39,27 @@ export default function RiskScoreDistributionChart({
 
   return (
     <div className="w-full h-full flex flex-col">
-      <div className="flex-1 flex items-center justify-center">
+      <div className="flex-1 flex items-center justify-center" style={{ height: '236px', paddingTop: '30px' }}>
         <ResponsiveContainer width="100%" height="100%">
           <BarChart
             data={data}
-            margin={{ top: 20, right: 45, left: 45, bottom: 45 }}
+            margin={{ top: 10, right: 32, left: 32, bottom: 34 }}
           >
             <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
             <XAxis
               dataKey="range"
               stroke="#64748b"
               style={{ fontSize: '12px' }}
-              tick={{ fontSize: 12 }}
+              tick={{ fontSize: 11 }}
               interval={0}
-              label={{ value: 'Risk Score Range', position: 'insideBottom', offset: -30, style: { fontSize: '11px', fill: '#64748b', textAnchor: 'middle' } }}
+              label={{ value: 'Risk Score Range', position: 'insideBottom', offset: -22, style: { fontSize: '10px', fill: '#64748b', textAnchor: 'middle' } }}
             />
             <YAxis
               stroke="#64748b"
               style={{ fontSize: '12px' }}
-              tick={{ fontSize: 11 }}
-              width={40}
-              label={{ value: 'Users', angle: -90, position: 'insideLeft', offset: -5, style: { fontSize: '11px', fill: '#64748b' } }}
+              tick={{ fontSize: 10 }}
+              width={35}
+              label={{ value: 'Users', angle: -90, position: 'insideLeft', offset: -4, style: { fontSize: '10px', fill: '#64748b' } }}
             />
             <Tooltip
               contentStyle={{
@@ -77,13 +78,13 @@ export default function RiskScoreDistributionChart({
               <ReferenceLine
                 x={data[thresholdBucketIndex].range}
                 stroke="#ef4444"
-                strokeWidth={2}
-                strokeDasharray="5 5"
+                strokeWidth={1.5}
+                strokeDasharray="3 3"
                 label={{
                   value: 'High Risk',
                   position: 'insideTopRight',
                   fill: '#ef4444',
-                  fontSize: 11,
+                  fontSize: 10,
                 }}
               />
             )}
@@ -97,7 +98,7 @@ export default function RiskScoreDistributionChart({
         </ResponsiveContainer>
       </div>
       {totalUsers !== undefined && (
-        <div className="text-center text-xs text-slate-500 mt-1">
+        <div className="text-center text-xs text-slate-500 mt-2 pt-2 border-t border-slate-100">
           Total: {totalUsers.toLocaleString()} users
         </div>
       )}

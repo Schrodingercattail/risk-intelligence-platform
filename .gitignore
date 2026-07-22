@@ -46,10 +46,13 @@ yarn-error.log*
 *.db
 *.sqlite
 
-# Model artifacts
-ml-models/artifacts/*.pkl
-ml-models/artifacts/*.json
-ml-models/artifacts/*.txt
+# Model artifacts (all paths)
+**/artifacts/*.pkl
+**/artifacts/*.joblib
+**/artifacts/*.json
+**/artifacts/*.txt
+*.pkl
+*.joblib
 
 # Generated data
 data/generated/*.csv
@@ -68,3 +71,15 @@ logs/
 # Test coverage
 .coverage
 htmlcov/
+
+# Debug and verification scripts (kept locally, not in repo)
+debug_*.py
+verify_*.py
+verify_*.sh
+
+# Local AI configuration
+.claude/
+MEMORY.md
+
+# Pytest
+.pytest_cache/

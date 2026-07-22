@@ -3,8 +3,14 @@ Application Configuration
 
 All environment-based configuration is centralized here.
 """
+import os
+from pathlib import Path
 from pydantic_settings import BaseSettings
 from functools import lru_cache
+
+# Calculate project root and model path at module load time
+_project_root = Path(__file__).parent.parent.parent
+MODEL_PATH_ABSOLUTE = str(_project_root / "ml-models" / "artifacts")
 
 
 class Settings(BaseSettings):
@@ -22,8 +28,8 @@ class Settings(BaseSettings):
     API_PREFIX: str = "/api"
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:3001", "http://frontend:3000"]
 
-    # Model Paths
-    MODEL_PATH: str = "./ml-models/artifacts"
+    # Model Paths - Use absolute path for consistency
+    MODEL_PATH: str = MODEL_PATH_ABSOLUTE
 
     # LLM Configuration
     ANTHROPIC_API_KEY: str = ""
@@ -37,7 +43,12 @@ class Settings(BaseSettings):
     GRAPH_WEIGHT: float = 0.2
 
     # Risk Thresholds
-    HIGH_RISK_THRESHOLD: float = 0.8
+    # Adjusted to match operational investigation workflow targets:
+    # - Critical: 2-5% (via override logic)
+    # - High: 5-15% (users with 70-89 scores)
+    # - Medium: 35-50% (users with 50-69 scores)
+    # - Low: 40-55% (users below 50)
+    HIGH_RISK_THRESHOLD: float = 0.7
     MEDIUM_RISK_THRESHOLD: float = 0.5
 
     # Detection Attribution Thresholds

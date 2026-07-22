@@ -124,7 +124,17 @@ class Withdrawal(Base):
 # ============================================================
 
 class RiskEvent(Base):
-    """Detected risk events for users."""
+    """
+    Detected risk events for users.
+
+    RiskEvent represents immutable history snapshots of risk assessments.
+    Each RiskEvent is tied to a specific pipeline run (pipeline_run_id) and
+    model version (model_version) for traceability and audit.
+
+    Data Consistency:
+    - User.current_risk_score: Current state (mutable, latest assessment)
+    - RiskEvent: Immutable history snapshot (never updated, only appended)
+    """
     __tablename__ = "risk_events"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -142,12 +152,17 @@ class RiskEvent(Base):
     rule_score = Column(Numeric(5, 2), nullable=True)
     graph_score = Column(Numeric(5, 2), nullable=True)
 
+    # Pipeline lifecycle tracking (NEW)
+    pipeline_run_id = Column(String(50), nullable=True)
+    model_version = Column(String(20), nullable=True)
+
     # Relationships
     user = relationship("User", back_populates="risk_events")
     risk_factors = relationship("RiskFactor", back_populates="risk_event", cascade="all, delete-orphan")
 
     __table_args__ = (
         Index("idx_risk_events_user_detected", "user_id", "detected_at"),
+        Index("idx_risk_events_pipeline_run", "pipeline_run_id", "detected_at"),
     )
 
 
@@ -229,7 +244,24 @@ class ModelMetadata(Base):
     feature_count = Column(Integer, nullable=True)  # Number of features used
     auc_score = Column(Numeric(5, 4), nullable=True)
     ks_score = Column(Numeric(5, 4), nullable=True)
+    # PSI: Latest calculated PSI snapshot from monitoring service (NOT a training metric)
+    # Meaning: Current production population drift vs this model's training baseline
+    # Updated by: ModelMonitoringService when comparing current data against baseline
+    # During training: Set to None (PSI is calculated later during monitoring)
     psi_score = Column(Numeric(5, 4), nullable=True)
+    psi_status = Column(String(20), nullable=True)  # 'stable', 'warning', 'drift', 'no_baseline', 'no_data'
+    psi_calculated_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Baseline Validation PSI: Generated during training to validate baseline correctness
+    # Meaning: PSI calculated by comparing baseline distribution with training dataframe
+    # Should be ~0 (or <0.01) when baseline is correctly created from training data
+    # Purpose: Validates that baseline was created correctly (self-consistency check)
+    # Updated by: Training service immediately after baseline creation
+    # NOT updated by monitoring service (that's what psi_score is for)
+    baseline_validation_psi = Column(Numeric(5, 4), nullable=True)
+    baseline_validation_status = Column(String(20), nullable=True)  # 'passed', 'failed', 'not_validated'
+    baseline_validated_at = Column(DateTime(timezone=True), nullable=True)
+
     deployed_at = Column(DateTime(timezone=True), server_default=func.now())
     is_active = Column(Boolean, default=True)
 

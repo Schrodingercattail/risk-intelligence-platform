@@ -5,7 +5,7 @@ These schemas define the structure of API requests and responses,
 providing validation and serialization.
 """
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 from decimal import Decimal
 
@@ -139,6 +139,9 @@ class RiskEventResponse(BaseModel):
     rule_score: Optional[float] = None
     graph_score: Optional[float] = None
     detection_methods: List[str] = []
+    # Pipeline lifecycle tracking (NEW)
+    pipeline_run_id: Optional[str] = None
+    model_version: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -176,11 +179,19 @@ class RiskLevelComposition(BaseModel):
 
 
 class DetectionSourceData(BaseModel):
-    """Detection source analysis data showing detection coverage rate."""
+    """Detection attribution data showing contribution of each detection method."""
     method: str  # Detection method name
-    detected_accounts: int  # Number of high-risk accounts detected by this method
-    detection_rate: float  # Percentage of high-risk accounts detected (0-100)
+    account_count: int  # Number of risky accounts attributed to this method
+    percentage: float  # Percentage of risky accounts (0-100)
     color: str = "#3b82f6"
+
+
+class SignalCombinationBreakdown(BaseModel):
+    """Signal combination breakdown showing how many accounts have each detection pattern."""
+    ml_only: int = 0  # Accounts with only ML signal
+    rule_only: int = 0  # Accounts with only Rule signal
+    graph_only: int = 0  # Accounts with only Graph signal
+    multi_signal: int = 0  # Accounts with multiple signals (2 or more)
 
 
 class ExecutiveSummary(BaseModel):
@@ -201,8 +212,10 @@ class RiskOverviewResponse(BaseModel):
     risk_score_statistics: RiskScoreStatistics = None
     # Risk level composition
     risk_level_composition: RiskLevelComposition = None
-    # Detection source analysis
+    # Detection attribution (method contribution analysis)
     detection_sources: List[DetectionSourceData] = []
+    # Signal combination breakdown
+    signal_combination_breakdown: SignalCombinationBreakdown = None
 
 
 class RiskEventListResponse(BaseModel):
@@ -278,10 +291,20 @@ class CaseResponse(BaseModel):
 
 class PipelineStatusResponse(BaseModel):
     """Schema for pipeline status."""
+    # Upload status
+    upload_status: str = "PENDING"  # PENDING, COMPLETED, FAILED
+    upload_timestamp: Optional[str] = None
+    upload_counts: Optional[Dict[str, int]] = None  # users, devices, trades, withdrawals
+
+    # Pipeline stages
+    data_sources: str = "PENDING"
     dataset_validation: str = "PENDING"
     feature_engineering: str = "PENDING"
     ml_scoring: str = "PENDING"
     graph_analysis: str = "PENDING"
+
+    # Pipeline results (available after completion)
+    results: Optional[Dict[str, Any]] = None
 
 
 class PipelineRunRequest(BaseModel):
@@ -299,9 +322,17 @@ class ModelTrainingResponse(BaseModel):
     test_size: Optional[int] = None
     positive_ratio: Optional[float] = None
     feature_importance_count: Optional[int] = None
-    baseline_saved: Optional[str] = None
+    baseline_path: Optional[str] = None
+    baseline_created: Optional[bool] = None
     model_id: Optional[int] = None
     error: Optional[str] = None
+    # Detailed label statistics
+    positive_label_count: Optional[int] = None
+    negative_label_count: Optional[int] = None
+    positive_ratio_detail: Optional[float] = None
+    total_labels: Optional[int] = None
+    # Top 10 feature importance
+    top_10_feature_importance: Optional[List[Dict[str, Any]]] = None
 
 
 # ============================================================
@@ -311,8 +342,8 @@ class ModelTrainingResponse(BaseModel):
 class ModelMetricsResponse(BaseModel):
     """Schema for model metrics."""
     model_name: str
-    version: str
-    metrics: dict[str, float]
+    version: Optional[str] = None
+    metrics: Dict[str, Optional[float]]
 
 
 class FeatureImportanceResponse(BaseModel):

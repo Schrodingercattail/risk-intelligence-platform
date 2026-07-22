@@ -10,6 +10,20 @@
 import { useState, useMemo, useEffect } from 'react';
 import { riskApi } from '../services/api';
 
+// Simple tooltip component
+function Tooltip({ content, children }: { content: string; children: React.ReactNode }) {
+  return (
+    <div className="group relative inline-block">
+      {children}
+      <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 hidden group-hover:block w-64 bg-slate-900 text-white text-xs rounded-lg p-3 shadow-lg z-50">
+        <div className="font-semibold mb-1">Cluster Risk Score</div>
+        <div className="text-slate-300">{content}</div>
+        <div className="absolute left-1/2 -translate-x-1/2 top-full w-0 h-0 border-l-8 border-r-8 border-t-8 border-transparent border-t-slate-900"></div>
+      </div>
+    </div>
+  );
+}
+
 interface InvestigationCase {
   case_id: string;
   user_id: string;
@@ -44,17 +58,17 @@ function transformToInvestigationCase(
   const ruleScore = item.rule_score || 0;
   const graphScore = item.graph_score || 0;
 
-  let summary = `This account received a ${item.risk_level.toLowerCase()} risk score (${Math.round(item.risk_score)}/100).`;
+  let summary = `This account received a ${item.risk_level.toLowerCase()} risk score (${Number(item.risk_score).toFixed(2)}/100).`;
   const contributingFactors: string[] = [];
 
   if (mlScore > 0) {
-    contributingFactors.push(`ML model detection with score ${Math.round(mlScore)}`);
+    contributingFactors.push(`ML Signal Score: ${Number(mlScore).toFixed(2)}`);
   }
   if (ruleScore > 0) {
-    contributingFactors.push(`Rule engine detection with score ${Math.round(ruleScore)}`);
+    contributingFactors.push(`Rule Engine Signal Score: ${Number(ruleScore).toFixed(2)}`);
   }
   if (graphScore > 0) {
-    contributingFactors.push(`Graph network analysis with score ${Math.round(graphScore)}`);
+    contributingFactors.push(`Graph Network Signal Score: ${Number(graphScore).toFixed(2)}`);
   }
 
   if (contributingFactors.length === 0) {
@@ -69,7 +83,7 @@ function transformToInvestigationCase(
   return {
     case_id: `CASE-${caseIdNumber}`,
     user_id: item.user_id,
-    risk_score: Math.round(item.risk_score),
+    risk_score: Number(item.risk_score),
     risk_level: item.risk_level,
     account_age: 0, // Placeholder - will be updated from detail API
     total_volume: 0, // Placeholder - will be updated from detail API
@@ -80,7 +94,7 @@ function transformToInvestigationCase(
     risk_explanation: {
       summary,
       contributingFactors: contributingFactors,
-      signal_analysis: `Risk analysis based on multiple detection methods. ML score: ${mlScore.toFixed(1)}, Rule score: ${ruleScore.toFixed(1)}, Graph score: ${graphScore.toFixed(1)}.`,
+      signal_analysis: `Risk analysis based on multiple detection methods. ML score: ${Number(mlScore).toFixed(2)}, Rule score: ${Number(ruleScore).toFixed(2)}, Graph score: ${Number(graphScore).toFixed(2)}.`,
       analyst_guidance: item.recommended_action || 'Review the risk factors and determine appropriate action based on investigation findings.'
     }
   };
@@ -185,12 +199,11 @@ export default function Investigation() {
   const handleCaseSelect = (caseItem: InvestigationCase) => {
     setSelectedCase(caseItem); // Set immediately for UI responsiveness
     setDisplayedTransactionCount(3); // Reset to show top 3 transactions initially
+    setDisplayedNetworkCount(3); // Reset to show top 3 network connections initially
+    setExpandedNetworkAccounts(new Set()); // Reset expanded accounts
     fetchCaseDetail(caseItem); // Fetch details in background
     fetchCaseEvidence(caseItem.user_id); // Fetch evidence in background
     fetchNetworkSignals(caseItem.user_id, true); // Fetch network signals in background (initial load)
-    setExpandedNetworkAccounts(new Set()); // Reset expanded accounts
-    setExpandedNetworkAccounts(new Set()); // Reset expanded accounts
-    fetchCaseEvidence(caseItem.user_id); // Fetch evidence in background
   };
 
   // Fetch cases from backend API
@@ -329,18 +342,6 @@ export default function Investigation() {
     }
   };
 
-  const getSeverityColor = (severity: string) => {
-    switch (severity) {
-      case 'critical':
-        return 'bg-red-50 border-red-200 text-red-900';
-      case 'high':
-        return 'bg-orange-50 border-orange-200 text-orange-900';
-      case 'medium':
-        return 'bg-yellow-50 border-yellow-200 text-yellow-900';
-      default:
-        return 'bg-slate-50 border-slate-200 text-slate-700';
-    }
-  };
 
   return (
     <div className="space-y-6">
@@ -348,7 +349,7 @@ export default function Investigation() {
       <div>
         <h1 className="text-2xl font-semibold text-slate-900">Investigation Workspace</h1>
         <p className="text-sm text-slate-600 mt-1">
-          Risk investigation and analysis workspace for risk analysts
+          Risk investigation workspace for analysts to review risk cases and evidence from batch analysis
         </p>
       </div>
 
@@ -378,7 +379,7 @@ export default function Investigation() {
             <div className="p-4 border-b border-slate-200">
               <h2 className="text-lg font-semibold text-slate-900">Investigation Queue</h2>
               <p className="text-xs text-slate-600 mt-1">
-                Showing {filteredCases.length} of {totalCases} cases • Sorted by risk score
+                Showing {filteredCases.length} of {totalCases} cases requiring review • Sorted by risk score (highest first)
               </p>
             </div>
             <div className="divide-y divide-slate-200 max-h-[600px] overflow-y-auto">
@@ -417,7 +418,7 @@ export default function Investigation() {
                       </div>
                       <div className="flex items-center justify-between text-sm mb-2">
                         <span className="text-slate-600">{caseItem.user_id}</span>
-                        <span className="font-bold text-slate-900">{caseItem.risk_score}/100</span>
+                        <span className="font-bold text-slate-900">{Number(caseItem.risk_score).toFixed(2)}/100</span>
                       </div>
                       <div className="text-xs text-slate-500">
                         {caseItem.recommended_action}
@@ -462,17 +463,20 @@ export default function Investigation() {
                     </p>
                   </div>
                   <div className="text-right">
-                    <div className="text-3xl font-bold text-red-600">{selectedCase.risk_score}</div>
+                    <div className="text-3xl font-bold text-red-600">{Number(selectedCase.risk_score).toFixed(2)}</div>
                     <div className="text-xs text-slate-500">Risk Score /100</div>
                   </div>
                 </div>
               </div>
 
-              {/* Risk Profile Grid */}
+              {/* User Profile Grid */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {/* Account Information */}
                 <div className="bg-white rounded-lg border border-slate-200 p-4">
-                  <h3 className="text-sm font-semibold text-slate-900 mb-3">Risk Profile</h3>
+                  <div className="flex items-center gap-2 mb-3">
+                    <h3 className="text-sm font-semibold text-slate-900">User Profile</h3>
+                  </div>
+                  <p className="text-xs text-slate-500 mb-3 -mt-2">Account metrics and trading statistics from uploaded dataset</p>
                   <div className="space-y-2">
                     <div className="flex justify-between text-sm">
                       <span className="text-slate-600">Risk Level</span>
@@ -482,7 +486,7 @@ export default function Investigation() {
                     </div>
                     <div className="flex justify-between text-sm">
                       <span className="text-slate-600">Risk Score</span>
-                      <span className="font-medium text-slate-900">{selectedCase.risk_score}/100</span>
+                      <span className="font-medium text-slate-900">{Number(selectedCase.risk_score).toFixed(2)}/100</span>
                     </div>
                     {selectedCase.detection_methods && selectedCase.detection_methods.length > 0 && (
                       <div className="flex justify-between text-sm">
@@ -545,12 +549,12 @@ export default function Investigation() {
                 </div>
               </div>
 
-              {/* AI Risk Explanation */}
+              {/* Model Explainability */}
               <div className="bg-white rounded-lg border border-slate-200 p-4">
                 <div className="flex items-center gap-2 mb-3">
-                  <h3 className="text-sm font-semibold text-slate-900">AI Risk Explanation</h3>
+                  <h3 className="text-sm font-semibold text-slate-900">Model Explainability</h3>
                   <span className="text-xs text-slate-500">
-                    Risk analysis insights for analyst review
+                    Model-generated risk analysis and contributing factors
                   </span>
                 </div>
 
@@ -573,12 +577,6 @@ export default function Investigation() {
                   </ul>
                 </div>
 
-                {/* Signal Analysis */}
-                <div className="mb-4">
-                  <h4 className="text-xs font-semibold text-slate-700 mb-1">How Signals Relate to Risk</h4>
-                  <p className="text-xs text-slate-600">{selectedCase.risk_explanation.signal_analysis}</p>
-                </div>
-
                 {/* Analyst Guidance */}
                 <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
                   <h4 className="text-xs font-semibold text-blue-900 mb-1">Recommended Analyst Action</h4>
@@ -595,7 +593,7 @@ export default function Investigation() {
                 <div className="flex items-center gap-2 mb-4">
                   <h3 className="text-sm font-semibold text-slate-900">Risk Evidence</h3>
                   <span className="text-xs text-slate-500">
-                    Detailed evidence from transactions, network, rules, and features
+                    Detailed evidence from database records supporting the risk assessment
                   </span>
                 </div>
 
@@ -674,8 +672,10 @@ export default function Investigation() {
                                 <span className="font-medium text-slate-900 ml-1">{caseEvidence.network_evidence.member_count}</span>
                               </div>
                               <div>
-                                <span className="text-slate-500">Cluster Risk:</span>
-                                <span className="font-medium text-red-700 ml-1">{caseEvidence.network_evidence.cluster_risk_score.toFixed(1)}/100</span>
+                                <Tooltip content="Cluster Risk Score represents the overall risk level of the connected account group. It is calculated at the cluster level by considering all accounts and relationships within the network. This may differ from Graph Network Signal Score because: Graph Network Signal Score measures this individual account's risk contribution in the network, while Cluster Risk Score measures the overall risk of the connected account group.">
+                                  <span className="text-slate-500 underline decoration-dotted decoration-slate-400 cursor-help">Cluster Risk Score:</span>
+                                </Tooltip>
+                                <span className="font-medium text-red-700 ml-1">{caseEvidence.network_evidence.cluster_risk_score.toFixed(2)}/100</span>
                               </div>
                             </div>
                           </div>
@@ -689,7 +689,7 @@ export default function Investigation() {
                         ) : networkSignals && networkSignals.connected_accounts.length > 0 ? (
                           <div className="space-y-2">
                             <div className="text-xs text-slate-600 mb-2">
-                              Suspicious network relationship detected. Connected to {networkSignals.connected_account_count} related accounts.
+                              Network relationship evidence from graph analysis. Connected to {networkSignals.connected_account_count} account{networkSignals.connected_account_count > 1 ? 's' : ''} through shared devices or IPs.
                               {networkSignals.connected_account_count > 3 && (
                                 <span> Showing top {Math.min(displayedNetworkCount, networkSignals.connected_account_count)} riskiest connections.</span>
                               )}
@@ -722,7 +722,7 @@ export default function Investigation() {
                                     </div>
                                   </div>
                                   <div className="text-right">
-                                    <div className="font-bold text-slate-900">{account.risk_score}</div>
+                                    <div className="font-bold text-slate-900">{Number(account.risk_score).toFixed(2)}</div>
                                     <div className="text-xs text-slate-500">Risk Score</div>
                                   </div>
                                 </div>
@@ -783,7 +783,7 @@ export default function Investigation() {
                           </div>
                         ) : (
                           <div className="text-xs text-slate-600">
-                            No suspicious network relationships detected.
+                            No network relationships detected in uploaded dataset.
                           </div>
                         )}
                       </div>
@@ -854,7 +854,7 @@ export default function Investigation() {
                   </div>
                 ) : (
                   <div className="text-center py-8 text-slate-500 text-sm">
-                    No evidence data available
+                    No evidence available from database records
                   </div>
                 )}
               </div>
@@ -865,7 +865,7 @@ export default function Investigation() {
               <h3 className="text-lg font-semibold text-slate-900 mb-2">Select a Case to Investigate</h3>
               <p className="text-sm text-slate-600">
                 Choose a case from the investigation queue to view detailed risk analysis,
-                evidence timeline, and recommended actions.
+                evidence from uploaded data, and recommended actions.
               </p>
             </div>
           )}

@@ -34,6 +34,7 @@ async def upload_data(
     devices: UploadFile | None = File(None),
     trades: UploadFile | None = File(None),
     withdrawals: UploadFile | None = File(None),
+    clear_existing: bool = False,
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -44,6 +45,9 @@ async def upload_data(
     - devices.csv
     - trades.csv
     - withdrawals.csv
+
+    Args:
+        clear_existing: If True, clears all existing data before import
 
     Rejects incomplete uploads with meaningful error response.
     """
@@ -79,6 +83,7 @@ async def upload_data(
 
     files_uploaded = []
     import_counts = {}
+    cleared_counts = {}
 
     # Save uploaded files temporarily
     import os
@@ -91,6 +96,12 @@ async def upload_data(
     withdrawals_path = None
 
     try:
+        # Clear existing pipeline data if requested
+        # This preserves trained models and only resets data lifecycle
+        if clear_existing:
+            service = PipelineService(db)
+            cleared_counts = await service.clear_pipeline_data()
+
         if users:
             users_path = os.path.join(temp_dir, users.filename)
             with open(users_path, "wb") as f:
@@ -124,8 +135,13 @@ async def upload_data(
             withdrawals_csv=withdrawals_path,
         )
 
+        message_parts = []
+        if cleared_counts:
+            message_parts.append(f"cleared {sum(cleared_counts.values())} existing records")
+        message_parts.append(f"imported {sum(import_counts.values())} new records")
+
         return DataUploadResponse(
-            message=f"Successfully uploaded {len(files_uploaded)} file(s)",
+            message=f"Successfully {' and '.join(message_parts)}",
             files_processed=files_uploaded,
             records_imported=import_counts,
         )
@@ -136,6 +152,63 @@ async def upload_data(
             files_processed=files_uploaded,
             records_imported={},
         )
+
+
+@router.post("/clear-data")
+async def clear_data(
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Clear all existing data from the database.
+
+    Returns counts of deleted records per table.
+    """
+    service = PipelineService(db)
+    counts = await service.clear_all_data()
+    return {
+        "message": "Successfully cleared all data",
+        "deleted_counts": counts,
+        "total_deleted": sum(counts.values())
+    }
+
+
+@router.post("/reset")
+async def reset_pipeline(
+    clear_models: bool = False,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Reset pipeline to initial state.
+
+    Clears pipeline data and returns the pipeline to a clean state.
+    This is the recommended way to start fresh with new data.
+
+    Args:
+        clear_models: If True, also deletes trained models (default: False)
+                     When False, preserves model metadata and artifacts
+
+    The default behavior preserves trained models so Model Monitoring
+    continues to show AUC/KS from the latest trained model.
+    """
+    service = PipelineService(db)
+
+    if clear_models:
+        # Full reset including models (destructive)
+        counts = await service.clear_all_data()
+    else:
+        # Data-only reset (preserves models)
+        counts = await service.clear_pipeline_data()
+
+    # Return fresh status after reset
+    status = await service.get_pipeline_status()
+
+    return {
+        "message": "Pipeline reset successfully",
+        "deleted_counts": counts,
+        "total_deleted": sum(counts.values()),
+        "models_preserved": counts.get("total_models_preserved", 0),
+        "status": status
+    }
 
 
 @router.post("/run")

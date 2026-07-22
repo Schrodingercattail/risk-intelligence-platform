@@ -38,9 +38,19 @@ async def save_metadata_to_db(
     auc: float,
     ks: float,
     feature_importance: list,
-    version: str
+    version: str,
+    psi_score: float = None
 ):
-    """Save model metadata to database."""
+    """
+    Save model metadata to database after training.
+
+    PSI Handling:
+    - psi_score parameter should remain None during training
+    - PSI is NOT a training metric - it's calculated by Model Monitoring service
+    - PSI compares current production population against training baseline
+    - Setting psi_score here would be misleading as it represents production drift, not training quality
+    - Model Monitoring service will calculate PSI when comparing current data against this model's baseline
+    """
     # Use synchronous engine for metadata saving
     engine = create_engine(settings.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://"))
 
@@ -54,7 +64,8 @@ async def save_metadata_to_db(
             feature_count=len(feature_importance),
             auc_score=float(auc),
             ks_score=float(ks),
-            psi_score=0.0,  # PSI requires reference population
+            psi_score=psi_score,  # PSI calculated from baseline comparison (None during training)
+            psi_status=None if psi_score is None else "stable" if psi_score < 0.1 else "warning" if psi_score < 0.25 else "drift",
             is_active=True,
         )
 
@@ -180,12 +191,41 @@ def train_from_csv(csv_dir: str = "data/generated"):
         print(f"\n⚠ Warning: Could not save metadata to database: {e}")
         print("Model was trained but metadata not stored. Update database manually if needed.")
 
+    # Save PSI baseline distribution for monitoring
+    print(f"\n{'='*50}")
+    print("Creating PSI Baseline Distribution")
+    print(f"{'='*50}")
+
+    baseline_path = trainer.save_baseline_distribution(features_df)
+    print(f"✓ PSI baseline saved to: {baseline_path}")
+    print(f"  - This baseline will be used for model monitoring")
+    print(f"  - PSI calculations compare current data vs this baseline")
+
+    # Validate baseline consistency (PSI should be ~0 when compared with itself)
+    print(f"\n{'='*50}")
+    print("Validating PSI Baseline Consistency")
+    print(f"{'='*50}")
+
+    from app.ml.psi import PSIAnalyzer
+    psi_analyzer = PSIAnalyzer(n_bins=10)
+    baseline = psi_analyzer.load_baseline(baseline_path)
+    validation = psi_analyzer.validate_baseline_consistency(features_df, baseline)
+
+    print(f"  - Max self-PSI: {validation['max_self_psi']}")
+    print(f"  - Consistent: {validation['is_consistent']}")
+    if validation['inconsistent_features']:
+        print(f"  ⚠ WARNING: {len(validation['inconsistent_features'])} features have PSI > 0.05:")
+        for feat in validation['inconsistent_features']:
+            print(f"    - {feat['feature']}: PSI = {feat['psi']}")
+    print(f"  - {validation['message']}")
+
     print(f"\n{'='*50}")
     print("Model Saved Successfully!")
     print(f"{'='*50}")
     print(f"\nArtifacts:")
     model_dir = project_root / "ml-models" / "artifacts"
     print(f"  - Model: {model_dir / 'risk_model_latest.pkl'}")
+    print(f"  - PSI Baseline: {baseline_path}")
     print(f"\nThe RiskScoringService will now use this trained model for inference.")
 
 

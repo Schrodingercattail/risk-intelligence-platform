@@ -1,12 +1,12 @@
 /**
- * AI Risk Command Center
+ * Risk Intelligence Platform
  *
- * AI-powered risk assessment and analytics platform.
+ * Machine Learning–Driven Detection, Monitoring & Investigation.
  * Enterprise SaaS Risk Intelligence MVP.
  */
 import { useState, useMemo, useEffect } from 'react';
 import { Table, SimpleMetricTooltip } from '../components/UI';
-import { DetectionSourceChart, RiskScoreDistributionChart, RiskScoreAnalyticsCard } from '../components/Charts';
+import { DetectionSourceChart, RiskScoreDistributionChart, RiskScoreAnalyticsCard, DetectionPatternChart } from '../components/Charts';
 import { RiskLevel } from '../types';
 import { riskApi, RiskOverview } from '../services/api';
 
@@ -102,13 +102,14 @@ function RiskLevelComposition({ riskComposition }: { riskComposition: { critical
   const shouldShowInBar = (width: number) => width >= 5;
 
   return (
-    <div className="bg-white border border-slate-200 rounded-lg p-6 h-[300px] flex flex-col">
-      <div className="flex items-center justify-between mb-4">
+    <div className="bg-white border border-slate-200 rounded-lg p-5 h-[300px] flex flex-col">
+      <div className="flex items-center justify-between mb-2">
         <h3 className="text-sm font-semibold text-slate-700">Risk Level Composition</h3>
       </div>
+      <p className="text-xs text-slate-500 mb-4">Distribution of users across risk severity categories</p>
 
       {/* Segmented Bar */}
-      <div className="flex-1 flex flex-col justify-center space-y-6">
+      <div className="flex-1 flex flex-col justify-center space-y-4">
         <div className="space-y-2">
           <div className="h-8 flex rounded-lg overflow-hidden">
             {riskLevels.map((level) => {
@@ -144,11 +145,11 @@ function RiskLevelComposition({ riskComposition }: { riskComposition: { critical
             </div>
           ))}
         </div>
+      </div>
 
-        {/* Note for small percentages */}
-        <div className="text-xs text-slate-500 text-center">
-          Percentages shown for segments ≥5%
-        </div>
+      {/* Note for small percentages - aligned with legend */}
+      <div className="text-xs text-slate-500 text-center mt-2 pt-2 border-t border-slate-100">
+        Percentages shown for segments ≥5%
       </div>
     </div>
   );
@@ -260,12 +261,12 @@ export default function RiskCommandCenter() {
 
   const detectionSources: Array<{ name: string; value: number; percentage: number; color: string }> = riskOverview?.detection_sources?.map((source: any) => ({
     name: source.method,
-    value: source.detected_accounts,
-    percentage: source.detection_rate,
+    value: source.account_count,
+    percentage: source.percentage,
     color: source.color,
   })) || [
+    { name: 'LightGBM Model', value: 0, percentage: 0, color: '#8b5cf6' },
     { name: 'Rule Engine', value: 0, percentage: 0, color: '#3b82f6' },
-    { name: 'LightGBM', value: 0, percentage: 0, color: '#8b5cf6' },
     { name: 'Graph Network', value: 0, percentage: 0, color: '#06b6d4' },
   ];
 
@@ -280,7 +281,7 @@ export default function RiskCommandCenter() {
       return {
         case_id: `CASE-${String(globalIndex).padStart(5, '0')}`,
         user_id: item.user_id,
-        risk_score: Math.round(item.risk_score),
+        risk_score: Number(item.risk_score),
         risk_level: item.risk_level as RiskLevel,
         detection_methods: item.detection_methods || [], // Use backend-generated detection methods
         recommended_action: item.recommended_action || 'Review case',
@@ -358,7 +359,7 @@ export default function RiskCommandCenter() {
     user_id: <span className="text-sm text-slate-700 font-mono">{item.user_id}</span>,
     risk_score: (
       <div className="flex items-center gap-1">
-        <span className="font-semibold text-slate-900">{item.risk_score}</span>
+        <span className="font-semibold text-slate-900">{Number(item.risk_score).toFixed(2)}</span>
         <span className="text-xs text-slate-400">/100</span>
       </div>
     ),
@@ -376,8 +377,8 @@ export default function RiskCommandCenter() {
       <div className="max-w-[1600px] mx-auto space-y-8">
         {/* ==================================== PAGE HEADER ==================================== */}
         <div>
-          <h1 className="text-2xl font-semibold text-slate-900">AI Risk Command Center</h1>
-          <p className="text-sm text-slate-500 mt-1">AI-powered risk assessment and analytics platform</p>
+          <h1 className="text-2xl font-semibold text-slate-900">Risk Intelligence Platform</h1>
+          <p className="text-sm text-slate-500 mt-1">Machine Learning–Driven Detection, Monitoring & Investigation</p>
         </div>
 
         {/* ==================================== LOADING STATE ==================================== */}
@@ -404,19 +405,7 @@ export default function RiskCommandCenter() {
         {/* ==================================== SECTION 1: EXECUTIVE RISK SUMMARY ==================================== */}
         <section>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            {/* Card 1: Analyzed Users */}
-            <KPICard colorTheme="blue">
-              <div className="flex items-start gap-2 mb-3">
-                <KPICardIcon type="users" />
-                <h3 className="text-sm font-semibold text-slate-700">Analyzed Users</h3>
-              </div>
-              <div className="flex-1 flex items-end">
-                <p className="text-4xl font-bold text-slate-900">{summary.analyzed_users.toLocaleString()}</p>
-              </div>
-              <p className="text-sm text-slate-500 mt-2 h-5">Unique users analyzed from uploaded dataset</p>
-            </KPICard>
-
-            {/* Card 2: High Risk Accounts */}
+            {/* Card 1: High Risk Accounts */}
             <KPICard colorTheme="red">
               <div className="flex items-start gap-2 mb-3">
                 <KPICardIcon type="warning" />
@@ -428,28 +417,45 @@ export default function RiskCommandCenter() {
               <p className="text-sm text-slate-500 mt-2 h-5">Users with Critical or High risk scores</p>
             </KPICard>
 
-            {/* Card 3: Fraud Networks */}
-            <KPICard colorTheme="purple">
-              <div className="flex items-start gap-2 mb-3">
-                <KPICardIcon type="network" />
-                <h3 className="text-sm font-semibold text-slate-700">Fraud Networks</h3>
-              </div>
-              <div className="flex-1 flex items-end">
-                <p className="text-4xl font-bold text-slate-900">{summary.fraud_networks}</p>
-              </div>
-              <p className="text-sm text-slate-500 mt-2 h-5">Users linked to suspicious network clusters</p>
-            </KPICard>
-
-            {/* Card 4: Risk Recommendations */}
+            {/* Card 2: Recommended Actions */}
             <KPICard colorTheme="yellow">
               <div className="flex items-start gap-2 mb-3">
                 <KPICardIcon type="action" />
-                <h3 className="text-sm font-semibold text-slate-700">Risk Recommendations</h3>
+                <h3 className="text-sm font-semibold text-slate-700">Recommended Actions</h3>
               </div>
               <div className="flex-1 flex items-end">
                 <p className="text-4xl font-bold text-slate-900">{summary.risk_recommendations.toLocaleString()}</p>
               </div>
-              <p className="text-sm text-slate-500 mt-2 h-5">Users requiring AI-generated risk actions</p>
+              <p className="text-sm text-slate-500 mt-2 h-5">Users requiring model-recommended actions</p>
+            </KPICard>
+
+            {/* Card 3: Network-linked Accounts */}
+            <KPICard colorTheme="purple">
+              <div className="flex items-start gap-2 mb-3">
+                <KPICardIcon type="network" />
+                <SimpleMetricTooltip
+                  metric="Network-linked Accounts"
+                  definition="Number of accounts connected to suspicious networks through shared devices, IP addresses, or other graph relationships."
+                >
+                  <h3 className="text-sm font-semibold text-slate-700">Network-linked Accounts</h3>
+                </SimpleMetricTooltip>
+              </div>
+              <div className="flex-1 flex items-end">
+                <p className="text-4xl font-bold text-slate-900">{summary.fraud_networks}</p>
+              </div>
+              <p className="text-sm text-slate-500 mt-2 h-5">Accounts in suspicious network clusters</p>
+            </KPICard>
+
+            {/* Card 4: Analyzed Users */}
+            <KPICard colorTheme="blue">
+              <div className="flex items-start gap-2 mb-3">
+                <KPICardIcon type="users" />
+                <h3 className="text-sm font-semibold text-slate-700">Analyzed Users</h3>
+              </div>
+              <div className="flex-1 flex items-end">
+                <p className="text-4xl font-bold text-slate-900">{summary.analyzed_users.toLocaleString()}</p>
+              </div>
+              <p className="text-sm text-slate-500 mt-2 h-5">Unique users analyzed from uploaded dataset</p>
             </KPICard>
           </div>
         </section>
@@ -458,9 +464,25 @@ export default function RiskCommandCenter() {
         <section>
           <h2 className="text-sm font-semibold text-slate-500 uppercase tracking-wider mb-4">Risk Intelligence Overview</h2>
 
-          {/* Row 1: Risk Score Distribution & Analytics */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
-            {/* Card 1: Risk Score Distribution */}
+          {/* Row 1: Risk Level Composition, Risk Score Analytics, Risk Score Distribution */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
+            {/* Card 1: Risk Level Composition */}
+            <SimpleMetricTooltip
+              metric="Risk Level Composition"
+              definition="Distribution of risk levels across accounts in the uploaded dataset."
+            >
+              <RiskLevelComposition riskComposition={riskComposition} />
+            </SimpleMetricTooltip>
+
+            {/* Card 2: Risk Score Analytics */}
+            <SimpleMetricTooltip
+              metric="Risk Score Analytics"
+              definition="Statistical summary of model-generated risk scores including average, threshold, and maximum values."
+            >
+              <RiskScoreAnalyticsCard statistics={riskScoreStatistics} />
+            </SimpleMetricTooltip>
+
+            {/* Card 3: Risk Score Distribution */}
             <SimpleMetricTooltip
               metric="Risk Score Distribution"
               definition="Distribution of risk scores across users, showing how many users fall into each score range bucket."
@@ -479,43 +501,50 @@ export default function RiskCommandCenter() {
                 </div>
               </div>
             </SimpleMetricTooltip>
-
-            {/* Card 2: Risk Score Analytics */}
-            <SimpleMetricTooltip
-              metric="Risk Score Analytics"
-              definition="Statistical summary of model-generated risk scores including average, median, threshold, and maximum values."
-            >
-              <RiskScoreAnalyticsCard statistics={riskScoreStatistics} />
-            </SimpleMetricTooltip>
           </div>
+        </section>
 
-          {/* Row 2: Risk Level Composition & Risk Detection Coverage */}
+        {/* ==================================== SECTION 3: DETECTION INTELLIGENCE ==================================== */}
+        <section>
+          <h2 className="text-sm font-semibold text-slate-500 uppercase tracking-wider mb-4">Detection Intelligence</h2>
+
+          {/* Row: Risk Detection Sources & Detection Pattern Distribution */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {/* Card 3: Risk Level Composition */}
+            {/* Card 1: Risk Detection Sources */}
             <SimpleMetricTooltip
-              metric="Risk Level Composition"
-              definition="Distribution of risk levels across accounts in the uploaded dataset."
+              metric="Risk Detection Sources"
+              definition="Contribution of each detection method among identified risk cases."
             >
-              <RiskLevelComposition riskComposition={riskComposition} />
-            </SimpleMetricTooltip>
-
-            {/* Card 4: Risk Detection Coverage */}
-            <SimpleMetricTooltip
-              metric="Risk Detection Coverage"
-              definition="Percentage of high-risk accounts identified by each detection method. Detection Rate = (High-risk accounts detected by method / Total high-risk accounts) × 100. The bars represent independent detection coverage and do not sum to 100%."
-            >
-              <div className="bg-white border border-slate-200 rounded-lg p-5 h-[300px] flex flex-col">
+              <div className="bg-white border border-slate-200 rounded-lg p-5 h-[320px] flex flex-col">
                 <div className="flex items-center justify-between mb-2">
-                  <h3 className="text-sm font-semibold text-slate-700">Risk Detection Coverage</h3>
+                  <h3 className="text-sm font-semibold text-slate-700">Risk Detection Sources</h3>
                 </div>
-                <p className="text-xs text-slate-500 mb-3">Percentage of high-risk accounts identified by each detection method</p>
+                <p className="text-xs text-slate-500 mb-3">Contribution of each detection method among identified risk cases</p>
                 <div style={{ height: '250px', width: '100%' }}>
                   <DetectionSourceChart data={transformedDetectionSources} />
                 </div>
               </div>
             </SimpleMetricTooltip>
+
+            {/* Card 2: Detection Pattern Distribution */}
+            <SimpleMetricTooltip
+              metric="Detection Pattern Distribution"
+              definition="Shows the overlap between detection methods - how many accounts were flagged by single methods vs multiple methods. Multi-signal accounts have 2 or more detection methods triggered simultaneously."
+            >
+              <div className="bg-white border border-slate-200 rounded-lg p-5 h-[320px] flex flex-col">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-sm font-semibold text-slate-700">Detection Pattern Distribution</h3>
+                </div>
+                <p className="text-xs text-slate-500 mb-3">Distribution of single and multi-signal detected accounts</p>
+                <div style={{ height: '250px', width: '100%' }}>
+                  <DetectionPatternChart data={riskOverview?.signal_combination_breakdown} />
+                </div>
+              </div>
+            </SimpleMetricTooltip>
           </div>
         </section>
+
+        {/* ==================================== SECTION 4: RISK INVESTIGATION QUEUE ==================================== */}
 
         {/* ==================================== SECTION 3: RISK INVESTIGATION QUEUE ==================================== */}
         <section>

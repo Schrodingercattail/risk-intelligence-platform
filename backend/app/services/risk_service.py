@@ -35,12 +35,19 @@ class RiskScoringService:
         self.db = db
         self.ml_service = MLInferenceService()
 
-    async def score_user(self, user_id: str) -> RiskEvent:
+    async def score_user(
+        self,
+        user_id: str,
+        pipeline_run_id: Optional[str] = None,
+        model_version: Optional[str] = None
+    ) -> RiskEvent:
         """
         Calculate risk scores for a user.
 
         Args:
             user_id: User to score
+            pipeline_run_id: Optional pipeline run identifier for traceability
+            model_version: Optional model version used for scoring
 
         Returns:
             RiskEvent with all scores
@@ -58,8 +65,15 @@ class RiskScoringService:
         # Combine scores (weighted)
         final_score = self._combine_scores(ml_score, rule_score, graph_score)
 
-        # Determine risk level
-        risk_level = self._determine_risk_level(final_score)
+        # DEBUG: Log score calculation
+        print(f"[RISK_DEBUG] SCORE_CALCULATION: user_id={user_id}, ml_score={ml_score:.2f}, rule_score={rule_score:.2f}, graph_score={graph_score:.2f}, final_score={final_score:.2f}")
+        print(f"[RISK_DEBUG] THRESHOLDS: HIGH={settings.HIGH_RISK_THRESHOLD*100}, MEDIUM={settings.MEDIUM_RISK_THRESHOLD*100}")
+
+        # Determine risk level (with override logic for coordinated fraud)
+        risk_level = self._determine_risk_level(final_score, ml_score, rule_score, graph_score)
+
+        # DEBUG: Log risk level determination
+        print(f"[RISK_DEBUG] RISK_LEVEL_DETERMINED: user_id={user_id}, risk_level={risk_level}, final_score={final_score:.2f}")
 
         # Determine primary reason
         primary_reason = self._determine_primary_reason(
@@ -82,10 +96,15 @@ class RiskScoringService:
             ml_score=Decimal(str(ml_score)),
             rule_score=Decimal(str(rule_score)),
             graph_score=Decimal(str(graph_score)),
+            pipeline_run_id=pipeline_run_id,
+            model_version=model_version,
         )
 
         self.db.add(risk_event)
         await self.db.flush()  # Flush to get risk_event.id before creating factors
+
+        # DEBUG: Log RiskEvent creation after flush
+        print(f"[RISK_DEBUG] RISKEVENT_CREATED: user_id={user_id}, risk_event.id={risk_event.id}, risk_level={risk_event.risk_level}, risk_score={risk_event.risk_score}")
 
         # Create risk factors
         await self._create_risk_factors(risk_event, feature)
@@ -98,13 +117,23 @@ class RiskScoringService:
         if user:
             user.current_risk_score = Decimal(str(final_score))
             user.risk_level = risk_level
+            # DEBUG: Log User update
+            print(f"[RISK_DEBUG] USER_UPDATED: user_id={user_id}, user.risk_level={user.risk_level}, user.current_risk_score={user.current_risk_score}")
             await self.db.commit()
 
         return risk_event
 
-    async def score_all_users(self) -> int:
+    async def score_all_users(
+        self,
+        pipeline_run_id: Optional[str] = None,
+        model_version: Optional[str] = None
+    ) -> int:
         """
         Score all users with features.
+
+        Args:
+            pipeline_run_id: Optional pipeline run identifier for traceability
+            model_version: Optional model version used for scoring
 
         Returns:
             Number of risk events created
@@ -114,7 +143,7 @@ class RiskScoringService:
 
         count = 0
         for user_id in user_ids:
-            await self.score_user(user_id)
+            await self.score_user(user_id, pipeline_run_id, model_version)
             count += 1
 
         return count
@@ -225,13 +254,74 @@ class RiskScoringService:
         )
         return round(final_score, 2)
 
-    def _determine_risk_level(self, final_score: float) -> str:
-        """Determine risk level from final score."""
-        if final_score >= settings.HIGH_RISK_THRESHOLD * 100:
-            return RiskLevel.HIGH.value if final_score < 90 else RiskLevel.CRITICAL.value
-        elif final_score >= settings.MEDIUM_RISK_THRESHOLD * 100:
+    def _determine_risk_level(self, final_score: float, ml_score: float = 0, rule_score: float = 0, graph_score: float = 0) -> str:
+        """
+        Determine risk level from final score with business override logic.
+
+        Critical Override:
+        ---------------
+        Certain coordinated fraud scenarios should not rely only on weighted scoring.
+        When ML anomaly detection, explicit rules, and graph network signals all agree
+        on high risk, severity should escalate regardless of weighted score.
+
+        This represents coordinated fraud ring / attack scenarios where:
+        - ML: Strong behavioral anomaly detected
+        - Rules: Explicit suspicious behavior patterns
+        - Graph: Network connections to suspicious entities
+
+        Override Thresholds:
+        - ML score >= 80: Strong behavioral anomaly
+        - Rule score >= 40: Multiple explicit rule violations
+        - Graph score >= 50: Significant network risk relationships
+
+        This rule acts as a business severity escalation for coordinated threats,
+        not a replacement for model scoring.
+
+        Normal Threshold Logic:
+        ----------------------
+        After override check, apply standard weighted score thresholds.
+        - CRITICAL: final_score >= 90 (within HIGH level)
+        - HIGH: final_score >= 70
+        - MEDIUM: final_score >= 40
+        - LOW: below 40
+
+        Args:
+            final_score: Combined weighted score (0-100)
+            ml_score: ML component score (0-100)
+            rule_score: Rule engine score (0-100)
+            graph_score: Graph network score (0-100)
+
+        Returns:
+            Risk level as string (CRITICAL, HIGH, MEDIUM, LOW)
+        """
+        # Critical override for coordinated fraud scenarios
+        # When all three detection systems agree on high risk, escalate to CRITICAL
+        if (
+            graph_score >= 50
+            and ml_score >= 80
+            and rule_score >= 40
+        ):
+            print(f"[RISK_DEBUG] OVERRIDE_CRITICAL: graph_score={graph_score:.2f}>=50, ml_score={ml_score:.2f}>=80, rule_score={rule_score:.2f}>=40")
+            return RiskLevel.CRITICAL.value
+
+        # Normal threshold-based classification
+        # Thresholds: HIGH >= 70, MEDIUM >= 50, LOW < 50
+        # CRITICAL via override requires: graph_score >= 50 AND ml_score >= 80 AND rule_score >= 40
+        # CRITICAL via scoring requires: final_score >= 90
+        high_threshold = settings.HIGH_RISK_THRESHOLD * 100
+        medium_threshold = settings.MEDIUM_RISK_THRESHOLD * 100
+
+        print(f"[RISK_DEBUG] THRESHOLD_CHECK: final_score={final_score:.2f}, high_threshold={high_threshold}, medium_threshold={medium_threshold}")
+
+        if final_score >= high_threshold:
+            result = RiskLevel.CRITICAL.value if final_score >= 90 else RiskLevel.HIGH.value
+            print(f"[RISK_DEBUG] THRESHOLD_HIGH: final_score>={high_threshold} -> {result}")
+            return result
+        elif final_score >= medium_threshold:
+            print(f"[RISK_DEBUG] THRESHOLD_MEDIUM: final_score>={medium_threshold} -> MEDIUM")
             return RiskLevel.MEDIUM.value
         else:
+            print(f"[RISK_DEBUG] THRESHOLD_LOW: final_score<{medium_threshold} -> LOW")
             return RiskLevel.LOW.value
 
     def _determine_primary_reason(

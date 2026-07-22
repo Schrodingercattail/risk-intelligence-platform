@@ -9,8 +9,11 @@ from datetime import datetime, timezone
 from enum import Enum
 import pandas as pd
 import numpy as np
+import math
+import random
+import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, update
 from pathlib import Path
 import sys
 import subprocess
@@ -18,7 +21,7 @@ import subprocess
 from app.services.feature_engineering import FeatureEngineeringService
 from app.services.graph_service import GraphAnalysisService
 from app.services.risk_service import RiskScoringService
-from app.models.database import User, Device, Trade, Withdrawal, ClusterMember
+from app.models.database import User, Device, Trade, Withdrawal, ClusterMember, ModelMetadata
 
 
 class PipelineStatus(str, Enum):
@@ -41,29 +44,215 @@ class PipelineService:
         """Initialize pipeline service with database session."""
         self.db = db
 
-    async def get_pipeline_status(self) -> Dict[str, str]:
+    async def get_pipeline_status(self) -> Dict[str, Any]:
         """
-        Get current pipeline status.
+        Get current pipeline status by inspecting database state.
 
         Returns:
-            Dict mapping step names to their status
+            Dict with upload info and all pipeline stage statuses
         """
-        # In a real implementation, this would query a pipeline_runs table
-        # For now, return placeholder status
-        # Check if we have imported data to determine data_sources status
-        from sqlalchemy import select, func
-        from app.models.models import User
+        from sqlalchemy import select, func, update
+        from app.models.database import User, Device, Trade, Withdrawal, FeatureTable, RiskEvent, AccountCluster, ClusterMember
 
-        user_count = await self.db.scalar(select(func.count()).select_from(User))
-        data_sources_status = PipelineStatus.COMPLETED.value if user_count > 0 else PipelineStatus.PENDING.value
+        # Get record counts
+        user_count = await self.db.scalar(select(func.count()).select_from(User)) or 0
+        device_count = await self.db.scalar(select(func.count()).select_from(Device)) or 0
+        trade_count = await self.db.scalar(select(func.count()).select_from(Trade)) or 0
+        withdrawal_count = await self.db.scalar(select(func.count()).select_from(Withdrawal)) or 0
+        feature_count = await self.db.scalar(select(func.count()).select_from(FeatureTable)) or 0
+        risk_event_count = await self.db.scalar(select(func.count()).select_from(RiskEvent)) or 0
+        cluster_count = await self.db.scalar(select(func.count()).select_from(AccountCluster)) or 0
+
+        # Get distinct risky accounts detected (from graph detection layer)
+        risky_accounts_detected = await self.db.scalar(
+            select(func.count(func.distinct(ClusterMember.user_id)))
+        ) or 0
+
+        # Get max timestamp for upload info - simplified query
+        max_timestamp = None
+        if user_count > 0:
+            # Get the max timestamp from Trade table as a proxy (most recent activity)
+            max_trade_time = await self.db.scalar(select(func.max(Trade.timestamp)))
+            if max_trade_time:
+                max_timestamp = max_trade_time.isoformat()
+
+        # Determine statuses based on data presence
+        has_data = user_count > 0 and device_count > 0 and trade_count > 0 and withdrawal_count > 0
+
+        upload_status = PipelineStatus.COMPLETED.value if has_data else PipelineStatus.PENDING.value
+        data_sources_status = PipelineStatus.COMPLETED.value if has_data else PipelineStatus.PENDING.value
+        validation_status = PipelineStatus.COMPLETED.value if has_data else PipelineStatus.PENDING.value
+        feature_engineering_status = PipelineStatus.COMPLETED.value if feature_count > 0 else PipelineStatus.PENDING.value
+        graph_analysis_status = PipelineStatus.COMPLETED.value if cluster_count > 0 else PipelineStatus.PENDING.value
+        ml_scoring_status = PipelineStatus.COMPLETED.value if risk_event_count > 0 else PipelineStatus.PENDING.value
+
+        # Get pipeline results if completed
+        results = None
+        if ml_scoring_status == PipelineStatus.COMPLETED.value:
+            results = {
+                "total_records": user_count + device_count + trade_count + withdrawal_count,
+                "users": user_count,
+                "risky_accounts_detected": risky_accounts_detected,
+                "fraud_networks": cluster_count,
+                "feature_vectors_generated": feature_count,
+            }
 
         return {
+            "upload_status": upload_status,
+            "upload_timestamp": max_timestamp,
+            "upload_counts": {
+                "users": user_count,
+                "devices": device_count,
+                "trades": trade_count,
+                "withdrawals": withdrawal_count,
+            } if has_data else None,
             "data_sources": data_sources_status,
-            "dataset_validation": PipelineStatus.PENDING.value,
-            "feature_engineering": PipelineStatus.PENDING.value,
-            "ml_scoring": PipelineStatus.PENDING.value,
-            "graph_analysis": PipelineStatus.PENDING.value,
+            "dataset_validation": validation_status,
+            "feature_engineering": feature_engineering_status,
+            "graph_analysis": graph_analysis_status,
+            "ml_scoring": ml_scoring_status,
+            "results": results,
         }
+
+    async def clear_all_data(self) -> Dict[str, int]:
+        """
+        Clear all existing data from the database.
+        WARNING: This also deletes trained models.
+
+        Returns:
+            Dict with counts of deleted records per table
+        """
+        from sqlalchemy import delete, select, func
+        from app.models.database import (
+            RiskFactor, RiskEvent, ClusterMember, AccountCluster,
+            FeatureTable, ModelMetadata, FeatureImportance, Case, Withdrawal, Trade, Device, User
+        )
+
+        counts = {}
+
+        # Delete in order of dependencies (child tables first)
+        # Risk management
+        result = await self.db.execute(delete(RiskFactor))
+        counts["risk_factors"] = result.rowcount
+
+        result = await self.db.execute(delete(RiskEvent))
+        counts["risk_events"] = result.rowcount
+
+        result = await self.db.execute(delete(Case))
+        counts["cases"] = result.rowcount
+
+        # Cluster data
+        result = await self.db.execute(delete(ClusterMember))
+        counts["cluster_members"] = result.rowcount
+
+        result = await self.db.execute(delete(AccountCluster))
+        counts["clusters"] = result.rowcount
+
+        # ML features and models
+        result = await self.db.execute(delete(FeatureImportance))
+        counts["feature_importance"] = result.rowcount
+
+        result = await self.db.execute(delete(ModelMetadata))
+        counts["model_metadata"] = result.rowcount
+
+        result = await self.db.execute(delete(FeatureTable))
+        counts["features"] = result.rowcount
+
+        # Transaction data
+        result = await self.db.execute(delete(Withdrawal))
+        counts["withdrawals"] = result.rowcount
+
+        result = await self.db.execute(delete(Trade))
+        counts["trades"] = result.rowcount
+
+        result = await self.db.execute(delete(Device))
+        counts["devices"] = result.rowcount
+
+        # Users (last, as other tables depend on them)
+        result = await self.db.execute(delete(User))
+        counts["users"] = result.rowcount
+
+        await self.db.commit()
+        return counts
+
+    async def clear_pipeline_data(self) -> Dict[str, int]:
+        """
+        Clear only pipeline data (users, devices, trades, withdrawals, risk events).
+
+        This PRESERVES:
+        - Model metadata (trained models)
+        - Feature importance
+        - Model artifacts
+        - PSI baseline
+
+        This is used during data upload/reset to maintain model lifecycle
+        separate from data lifecycle.
+
+        Returns:
+            Dict with counts of deleted records per table
+        """
+        from sqlalchemy import delete, select, func
+        from app.models.database import (
+            RiskFactor, RiskEvent, ClusterMember, AccountCluster,
+            FeatureTable, Case, Withdrawal, Trade, Device, User
+        )
+
+        # Log active model count before clearing
+        from app.models.database import ModelMetadata
+        active_model_count = await self.db.scalar(
+            select(func.count()).select_from(ModelMetadata).where(ModelMetadata.is_active == True)
+        )
+
+        counts = {
+            "active_models_preserved": active_model_count or 0
+        }
+
+        # Delete in order of dependencies (child tables first)
+        # Risk management
+        result = await self.db.execute(delete(RiskFactor))
+        counts["risk_factors"] = result.rowcount
+
+        result = await self.db.execute(delete(RiskEvent))
+        counts["risk_events"] = result.rowcount
+
+        result = await self.db.execute(delete(Case))
+        counts["cases"] = result.rowcount
+
+        # Cluster data
+        result = await self.db.execute(delete(ClusterMember))
+        counts["cluster_members"] = result.rowcount
+
+        result = await self.db.execute(delete(AccountCluster))
+        counts["clusters"] = result.rowcount
+
+        # Feature table (regenerated from new data)
+        result = await self.db.execute(delete(FeatureTable))
+        counts["features"] = result.rowcount
+
+        # Transaction data
+        result = await self.db.execute(delete(Withdrawal))
+        counts["withdrawals"] = result.rowcount
+
+        result = await self.db.execute(delete(Trade))
+        counts["trades"] = result.rowcount
+
+        result = await self.db.execute(delete(Device))
+        counts["devices"] = result.rowcount
+
+        # Users (last, as other tables depend on them)
+        result = await self.db.execute(delete(User))
+        counts["users"] = result.rowcount
+
+        await self.db.commit()
+
+        # Verify model preservation after clearing
+        total_model_count = await self.db.scalar(
+            select(func.count()).select_from(ModelMetadata)
+        )
+
+        counts["total_models_preserved"] = total_model_count or 0
+
+        return counts
 
     async def import_csv_data(
         self,
@@ -127,8 +316,22 @@ class PipelineService:
         Returns:
             Dict with pipeline results
         """
+        # Generate unique pipeline run ID for traceability
+        pipeline_run_id = f"run_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+
+        # Get active model version
+        model_version = None
+        model_result = await self.db.execute(
+            select(ModelMetadata.version).where(ModelMetadata.is_active == True)
+        )
+        active_model = model_result.scalar_one_or_none()
+        if active_model:
+            model_version = active_model
+
         results = {
             "started_at": datetime.now(timezone.utc),
+            "pipeline_run_id": pipeline_run_id,
+            "model_version": model_version,
             "steps": {},
             "final_counts": {},
         }
@@ -172,12 +375,17 @@ class PipelineService:
                 }
 
                 risk_service = RiskScoringService(self.db)
-                events_created = await risk_service.score_all_users()
+                events_created = await risk_service.score_all_users(
+                    pipeline_run_id=pipeline_run_id,
+                    model_version=model_version
+                )
 
                 results["steps"]["ml_scoring"].update({
                     "status": PipelineStatus.COMPLETED.value,
                     "completed_at": datetime.now(timezone.utc),
                     "risk_events_created": events_created,
+                    "pipeline_run_id": pipeline_run_id,
+                    "model_version": model_version,
                 })
 
             # Step 4: Model Training (optional)
@@ -284,10 +492,22 @@ class PipelineService:
 
         This method:
         1. Loads features from FeatureTable
-        2. Generates labels from cluster membership
+        2. Generates labels from behavioral signals (NOT graph features)
         3. Trains LightGBM model
         4. Saves model artifacts and metadata
         5. Creates PSI baseline
+
+        Label Generation (Behavioral-based, no graph leakage):
+        - Uses trading patterns, withdrawal patterns, account age
+        - Does NOT use shared_device_count, linked_account_count, or cluster membership
+        - Labels simulate independent investigator-confirmed risk outcomes
+
+        PSI Handling:
+        - During training, we save the feature distribution as baseline
+        - We do NOT calculate PSI during training (PSI is not a training metric)
+        - PSI (Population Stability Index) is calculated by Model Monitoring service
+        - PSI compares current production population against this training baseline
+        - Setting psi_score during training would be meaningless
 
         Returns:
             Dict with training results
@@ -307,52 +527,127 @@ class PipelineService:
                     "error": "No feature data available. Run feature engineering first."
                 }
 
-            # Get cluster members for labeling
-            cluster_members_result = await self.db.execute(
-                select(ClusterMember.user_id).distinct()
-            )
-            risky_users = set(row[0] for row in cluster_members_result.all())
-
             # Load all features
             features_result = await self.db.execute(select(FeatureTable))
             features_list = features_result.scalars().all()
 
             # Prepare training data
+            # Official 13 risk features (must match frontend RISK_FEATURE_COUNT)
+            # These are the predictive model input features used by LightGBM
             feature_cols = [
+                # Network features
                 'shared_device_count', 'linked_account_count', 'unique_ip_count',
+                # Trading features
                 'trade_frequency_24h', 'trade_frequency_7d', 'opposite_trade_ratio',
-                'avg_trade_size', 'trade_volume_24h', 'account_age_days',
-                'active_days_count', 'withdrawal_risk_score', 'withdrawal_frequency_24h',
-                'withdrawal_volume_24h', 'first_withdrawal_flag'
+                'avg_trade_size', 'trade_volume_24h',
+                # Account features
+                'account_age_days', 'active_days_count',
+                # Withdrawal features
+                'withdrawal_risk_score', 'withdrawal_frequency_24h', 'withdrawal_volume_24h'
             ]
 
-            # Build DataFrame
+            # Calculate behavioral thresholds from data distribution
             feature_data = []
             labels = []
 
+            # First pass: collect all features to compute thresholds
+            all_features = []
             for feature in features_list:
                 row = {'user_id': feature.user_id}
                 for col in feature_cols:
                     row[col] = getattr(feature, col, 0) or 0
+                all_features.append(row)
 
-                # Generate label: risky if in cluster
-                is_risky = feature.user_id in risky_users
-                row['is_risky'] = 1 if is_risky else 0
+            temp_df = pd.DataFrame(all_features)
 
-                feature_data.append(row)
+            # Convert all columns except user_id to numeric to handle Decimal types
+            numeric_cols = [col for col in temp_df.columns if col != 'user_id']
+            for col in numeric_cols:
+                temp_df[col] = pd.to_numeric(temp_df[col], errors='coerce')
+            temp_df[numeric_cols] = temp_df[numeric_cols].fillna(0)
+
+            # Calculate thresholds based on data distribution (percentiles)
+            trade_freq_threshold = temp_df['trade_frequency_24h'].quantile(0.75)  # Top 25%
+            trade_volume_threshold = temp_df['trade_volume_24h'].quantile(0.80)  # Top 20%
+            withdrawal_freq_threshold = temp_df['withdrawal_frequency_24h'].quantile(0.75)
+            withdrawal_volume_threshold = temp_df['withdrawal_volume_24h'].quantile(0.80)
+            account_age_threshold = temp_df['account_age_days'].quantile(0.20)  # Bottom 20% (new accounts)
+
+            # Second pass: generate probabilistic labels based on behavioral signals
+            # This simulates investigation outcomes with uncertainty
+            import random
+            random.seed(42)  # For reproducibility
+
+            for row in all_features:
+                risk_score = 0.0
+
+                # Trading patterns (convert to float)
+                trade_freq_24h = float(row['trade_frequency_24h'])
+                trade_volume_24h = float(row['trade_volume_24h'])
+                opposite_trade_ratio = float(row['opposite_trade_ratio'])
+
+                # Add continuous risk contributions (not binary)
+                risk_score += min(trade_freq_24h / (trade_freq_threshold + 1), 2.0)  # Cap at 2
+                risk_score += min(trade_volume_24h / (trade_volume_threshold + 1000), 1.5)
+
+                # Opposite trading (binary but smaller weight)
+                if opposite_trade_ratio > 0:
+                    risk_score += 0.5
+
+                # Withdrawal patterns
+                withdrawal_freq_24h = float(row['withdrawal_frequency_24h'])
+                withdrawal_volume_24h = float(row['withdrawal_volume_24h'])
+
+                risk_score += min(withdrawal_freq_24h / (withdrawal_freq_threshold + 1), 2.0)
+                risk_score += min(withdrawal_volume_24h / (withdrawal_volume_threshold + 1000), 1.5)
+
+                if row['first_withdrawal_flag']:
+                    risk_score += 0.8
+
+                # Account patterns
+                account_age_days = float(row['account_age_days'])
+
+                # New accounts are riskier, but scale logarithmically
+                if account_age_days > 0:
+                    risk_score += max(0, 1.5 - math.log(account_age_days + 1) * 0.3)
+                else:
+                    risk_score += 1.5
+
+                # Add probabilistic noise to simulate investigation uncertainty
+                # This prevents perfect separation
+                noise = random.gauss(0, 0.5)  # Gaussian noise with mean=0, std=0.5
+                risk_score += noise
+
+                # Convert to probability using sigmoid
+                # Higher risk_score = higher probability of being risky
+                risk_probability = 1 / (1 + math.exp(-(risk_score - 2.5) / 0.8))
+
+                # Sample label from probability (Monte Carlo)
+                # This introduces uncertainty even with high risk scores
+                is_risky = random.random() < risk_probability
+
+                feature_data.append({**row, 'is_risky': 1 if is_risky else 0})
                 labels.append(is_risky)
 
             features_df = pd.DataFrame(feature_data)
 
-            # Import trainer
-            sys.path.insert(0, str(Path(__file__).parent.parent.parent / "ml-models" / "training"))
-            from ml.training.train_risk_model import LightGBMTrainer
+            # Normalize dtypes for LightGBM training
+            # Convert all feature columns to numeric, excluding user_id
+            numeric_cols = [col for col in features_df.columns if col != 'user_id']
+            for col in numeric_cols:
+                features_df[col] = pd.to_numeric(features_df[col], errors='coerce')
 
+            # Fill missing values with 0
+            features_df[numeric_cols] = features_df[numeric_cols].fillna(0)
+
+            # Import trainer - add ml-models to path
+            # Path(__file__) = backend/app/services/pipeline_service.py
             # Create model directory if needed
             model_dir = Path(settings.MODEL_PATH)
             model_dir.mkdir(parents=True, exist_ok=True)
 
             # Train model
+            from app.ml.model import LightGBMTrainer
             trainer = LightGBMTrainer(model_path=str(model_dir))
             training_results = trainer.train(features_df)
 
@@ -362,14 +657,15 @@ class PipelineService:
             # Save metadata to database
             from app.models.database import ModelMetadata, FeatureImportance
 
-            # Deactivate previous models
+            # Deactivate previous models (do this before creating new one for clarity)
+            # Use update statement for efficiency
             await self.db.execute(
-                select(ModelMetadata).where(ModelMetadata.is_active == True)
+                update(ModelMetadata).where(ModelMetadata.is_active == True).values(is_active=False)
             )
-            for model in (await self.db.execute(select(ModelMetadata).where(ModelMetadata.is_active == True))).scalars().all():
-                model.is_active = False
 
             # Create new model metadata
+            # IMPORTANT: is_active=False by default for manual activation workflow
+            # This allows admin to review metrics before activating the model
             model_metadata = ModelMetadata(
                 model_name="LightGBM Risk Model",
                 version=version,
@@ -378,27 +674,48 @@ class PipelineService:
                 feature_count=len(training_results['feature_importance']),
                 auc_score=training_results['metrics']['auc'],
                 ks_score=training_results['metrics']['ks'],
-                psi_score=0.0,  # Will be calculated on next monitoring cycle
-                is_active=True,
+                is_active=False,  # Requires manual activation via POST /api/model/models/{id}/activate
             )
             self.db.add(model_metadata)
             await self.db.flush()
 
             # Save feature importance
+            # Normalize importance scores to relative percentages (sum = 100) to fit in database column
+            total_importance = sum(fi['importance'] for fi in training_results['feature_importance'][:50])
             for i, fi in enumerate(training_results['feature_importance'][:50], 1):
+                # Normalize to percentage (sum = 100)
+                normalized_score = (fi['importance'] / total_importance * 100) if total_importance > 0 else 0
                 fi_record = FeatureImportance(
                     model_id=model_metadata.model_id,
                     feature_name=fi['feature'],
-                    importance_score=fi['importance'],
+                    importance_score=normalized_score,
                     rank=i,
                 )
                 self.db.add(fi_record)
 
+            # Create PSI baseline only if it doesn't exist
+            # This preserves the original training baseline for ongoing drift monitoring
+            from app.services.psi_service import PSIService
+            psi_service = PSIService(self.db)
+            baseline_path = str(Path(settings.MODEL_PATH) / "feature_baseline.json")
+
+            baseline_created = False
+            if not Path(baseline_path).exists():
+                baseline_path = await psi_service.create_and_save_baseline(features_df, baseline_path)
+                baseline_created = True
+            else:
+                # Keep existing baseline - it represents the original training distribution
+                baseline_created = False
+
             await self.db.commit()
 
-            # Save PSI baseline
-            baseline_path = model_dir / "feature_distribution.json"
-            trainer.save_baseline_distribution(features_df, str(baseline_path))
+            # Calculate detailed label statistics
+            positive_count = sum(labels)
+            negative_count = len(labels) - positive_count
+            positive_ratio = positive_count / len(labels) if len(labels) > 0 else 0
+
+            # Get top 10 feature importance
+            top_10_features = training_results['feature_importance'][:10]
 
             return {
                 "status": PipelineStatus.COMPLETED.value,
@@ -408,8 +725,16 @@ class PipelineService:
                 "test_size": training_results['test_size'],
                 "positive_ratio": training_results['positive_ratio'],
                 "feature_importance_count": len(training_results['feature_importance']),
-                "baseline_saved": str(baseline_path),
-                "model_id": model_metadata.model_id
+                "baseline_path": str(baseline_path),
+                "baseline_created": baseline_created,
+                "model_id": model_metadata.model_id,
+                # Detailed label statistics
+                "positive_label_count": positive_count,
+                "negative_label_count": negative_count,
+                "positive_ratio_detail": positive_ratio,
+                "total_labels": len(labels),
+                # Top 10 feature importance
+                "top_10_feature_importance": top_10_features
             }
 
         except Exception as e:

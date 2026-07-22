@@ -2,18 +2,16 @@
 Model Monitoring API Routes
 
 Provides model metrics, feature importance, and PSI monitoring.
+Also handles model training and activation for the ML lifecycle.
 """
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from pathlib import Path
-import subprocess
-import sys
+from datetime import datetime
 
 from app.db.session import get_db
 from app.models.database import ModelMetadata, FeatureImportance
 from app.models.schemas import ModelMetricsResponse, FeatureImportanceListResponse
-from sqlalchemy import select, desc
-from app.config import settings
+from sqlalchemy import select, desc, update
 from app.services.model_monitoring_service import ModelMonitoringService
 
 router = APIRouter(prefix="/model", tags=["Model"])
@@ -23,7 +21,7 @@ router = APIRouter(prefix="/model", tags=["Model"])
 async def get_model_metrics(
     db: AsyncSession = Depends(get_db)
 ):
-    """Get current model performance metrics."""
+    """Get current model performance metrics. Returns null if no trained model available."""
     # Get active model
     result = await db.execute(
         select(ModelMetadata)
@@ -40,14 +38,14 @@ async def get_model_metrics(
             metrics={
                 "auc": float(model.auc_score) if model.auc_score else None,
                 "ks": float(model.ks_score) if model.ks_score else None,
-                "psi": float(model.psi_score) if model.psi_score else None,
+                "psi": None,  # PSI is calculated dynamically, not stored
             },
         )
     else:
-        # Return null metrics if no model deployed
+        # Return null metrics if no model deployed (not misleading 0 values)
         return ModelMetricsResponse(
             model_name="LightGBM Risk Model",
-            version="v1.0",
+            version=None,
             metrics={
                 "auc": None,
                 "ks": None,
@@ -93,47 +91,94 @@ async def get_feature_importance(
 
 @router.post("/train")
 async def train_model(
-    source: str = "database",  # or "csv"
+    dataset: str = "historical",  # "historical" or "current"
     db: AsyncSession = Depends(get_db)
 ):
     """
     Train a new LightGBM model on available data.
 
-    This is a long-running operation. In production, this should be
-    run as a background task with progress tracking.
+    This creates a new model entry in the registry without activating it.
+    The admin can review metrics before activating the model.
+
+    Training Dataset Options:
+    - historical (default): Uses test_data/v2_diverse CSV files (official baseline)
+    - current: Uses current database FeatureTable data
+
+    Training Flow:
+    1. Load training dataset (CSV files or database features)
+    2. Generate labels using behavioral signals (simulates investigation outcomes)
+    3. Train LightGBM model
+    4. Evaluate performance (AUC, KS)
+    5. Save model artifacts (.pkl)
+    6. Create PSI baseline distribution (only for historical dataset)
+    7. Save metadata to database (is_active=False by default)
+
+    Returns:
+        Training result with model version and metrics
+
+    Error Cases:
+        - No feature data available for current dataset: Run pipeline first
+        - Training failure: Check logs for details
     """
     try:
-        # Run training script
-        project_root = Path(__file__).parent.parent.parent.parent
-        script_path = project_root / "ml-models" / "training" / "train_risk_model.py"
+        if dataset == "historical":
+            # Use historical CSV training dataset (v2_diverse)
+            from app.services.historical_training_service import HistoricalTrainingService
 
-        # Run the training script
-        result = subprocess.run(
-            [sys.executable, "-m", "ml.training.train_risk_model", "--source", source],
-            cwd=str(project_root),
-            capture_output=True,
-            text=True,
-            timeout=300,  # 5 minute timeout
-        )
+            training_service = HistoricalTrainingService(db)
+            training_result = await training_service.train_from_historical_dataset()
+        else:
+            # Use current database dataset
+            from app.services.pipeline_service import PipelineService
 
-        if result.returncode != 0:
+            pipeline_service = PipelineService(db)
+            training_result = await pipeline_service.train_model()
+
+        if training_result.get("status") == "failed":
+            error_msg = training_result.get("error", "Training failed")
             raise HTTPException(
                 status_code=500,
-                detail=f"Training failed: {result.stderr}"
+                detail=error_msg
+            )
+
+        # Get the newly created model from database
+        new_model = await db.execute(
+            select(ModelMetadata)
+            .order_by(ModelMetadata.model_id.desc())
+            .limit(1)
+        )
+        new_model = new_model.scalar_one_or_none()
+
+        if not new_model:
+            raise HTTPException(
+                status_code=500,
+                detail="Training completed but failed to save model metadata"
             )
 
         return {
-            "status": "success",
-            "message": "Model training completed successfully",
-            "output": result.stdout,
+            "status": "completed",
+            "model_id": new_model.model_id,
+            "model_version": new_model.version,
+            "algorithm": new_model.algorithm or "LightGBM",
+            "model_type": new_model.model_type or "Gradient Boosting",
+            "metrics": {
+                "auc": float(new_model.auc_score) if new_model.auc_score else None,
+                "ks": float(new_model.ks_score) if new_model.ks_score else None,
+            },
+            "feature_count": new_model.feature_count,
+            "deployment_status": "pending",
+            "message": "Model training completed successfully. Review metrics before activation."
         }
 
-    except subprocess.TimeoutExpired:
-        raise HTTPException(
-            status_code=500,
-            detail="Training timed out after 5 minutes"
-        )
+    except HTTPException:
+        raise
     except Exception as e:
+        import traceback
+        traceback.print_exc()  # Log the full traceback for debugging
+        import sys
+        print(f"ERROR: {str(e)}", file=sys.stderr)
+        print(f"ERROR TYPE: {type(e).__name__}", file=sys.stderr)
+        traceback.print_exc()
         raise HTTPException(
             status_code=500,
             detail=f"Training error: {str(e)}"
@@ -207,6 +252,15 @@ async def get_psi_monitoring(
 
     Returns feature-wise PSI values to detect distribution drift
     between training baseline and current production data.
+
+    PSI is calculated dynamically by comparing current feature population
+    against the original training baseline. Training data comparison is not
+    used as it will always produce PSI=0.
+
+    Thresholds:
+    - PSI < 0.1: Stable (no significant drift)
+    - PSI 0.1-0.25: Warning (minor drift, monitor closely)
+    - PSI > 0.25: Significant drift (retrain recommended)
     """
     service = ModelMonitoringService(db)
     psi_data = await service.calculate_psi()
@@ -252,4 +306,74 @@ async def create_baseline(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to create baseline: {str(e)}"
+        )
+
+
+@router.post("/models/{model_id}/activate")
+async def activate_model(
+    model_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Activate a specific model as the production model.
+
+    This endpoint:
+    1. Sets the selected model to is_active=True
+    2. Deactivates all other models (is_active=False)
+    3. Updates the production model reference
+
+    Flow:
+    - Admin reviews newly trained model metrics
+    - Admin clicks "Activate Model" for the selected model
+    - System switches production model to new version
+    - Monitoring continues with new model
+
+    Important:
+    - PSI monitoring continues using the NEW model's training baseline
+    - Old models remain in registry for rollback capability
+    """
+    try:
+        # Verify the model exists
+        result = await db.execute(
+            select(ModelMetadata).where(ModelMetadata.model_id == model_id)
+        )
+        model = result.scalar_one_or_none()
+
+        if not model:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Model with ID {model_id} not found"
+            )
+
+        # Deactivate all models
+        await db.execute(
+            update(ModelMetadata)
+            .where(ModelMetadata.is_active == True)
+            .values(is_active=False)
+        )
+
+        # Activate the selected model
+        await db.execute(
+            update(ModelMetadata)
+            .where(ModelMetadata.model_id == model_id)
+            .values(is_active=True)
+        )
+
+        await db.commit()
+
+        return {
+            "status": "success",
+            "message": f"Model {model.version} activated successfully",
+            "model_id": model_id,
+            "model_version": model.version,
+            "previous_models_deactivated": True,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to activate model: {str(e)}"
         )

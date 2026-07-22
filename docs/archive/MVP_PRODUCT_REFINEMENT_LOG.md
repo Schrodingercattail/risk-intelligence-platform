@@ -1,5 +1,227 @@
 # MVP Product Refinement Log
 
+## Dataset Information Dynamic Display
+
+Date: 2026-07-19
+
+Issue:
+
+The Dataset Information in the bottom left corner showed hardcoded values:
+- Generated: "Jul 15, 2026 14:32" (static, outdated)
+- No record count displayed
+
+This did not reflect the actual uploaded dataset or processing timestamp.
+
+Decision:
+
+Make Dataset Information display actual data from backend pipeline status.
+
+Implementation:
+
+**Layout.tsx Changes:**
+
+1. Added state management:
+```typescript
+const [datasetInfo, setDatasetInfo] = useState<{
+  generated: string | null
+  totalRecords: number
+}>({ generated: null, totalRecords: 0 })
+```
+
+2. Added API call to fetch pipeline status:
+```typescript
+useEffect(() => {
+  const fetchDatasetInfo = async () => {
+    const status = await pipelineApi.getStatus()
+    // Format timestamp and extract record count
+  }
+  fetchDatasetInfo()
+}, [])
+```
+
+3. Updated display fields:
+- Generated: Shows actual upload timestamp from pipeline (e.g., "Jul 19, 2026 08:49")
+- Records: Added new field showing total records processed (e.g., "48,957")
+
+**API Endpoint Used:**
+GET /api/pipeline/status
+- Uses upload_timestamp field for Generated display
+- Uses results.total_records for Records display
+
+**Behavior:**
+- Shows "No data uploaded" when no pipeline data exists
+- Shows "N/A" for records when not available
+- Automatically updates when new data is uploaded via Data Pipeline
+
+**Fields:**
+- Source: "Uploaded Dataset" (static)
+- Processing: "Risk Analytics Pipeline" (static)
+- Update: "Manual Upload" (static)
+- Generated: Dynamic timestamp from backend ✅
+- Records: Dynamic count from backend ✅
+
+Product Impact:
+
+Before: Static, outdated timestamp that didn't reflect actual data
+After: Real-time dataset information that updates with each pipeline run
+
+Users can now see:
+- When the current dataset was actually uploaded
+- How many total records are being analyzed
+- Consistent data provenance across the application
+
+No changes to:
+- Backend API structure
+- Data Pipeline functionality
+- Upload mechanism
+
+---
+
+## Network Risk Metrics Terminology Refinement
+
+Date: 2026-07-19
+
+Issue:
+
+The product had inconsistent naming for "Fraud Networks" across different pages:
+
+**Data Pipeline page:**
+- "Fraud Networks: 80"
+- This number represents detected suspicious network clusters (account_clusters count)
+- Cluster-level metric
+
+**Risk Overview page:**
+- "Fraud Networks: 240"
+- This number represents users involved in suspicious network clusters (cluster_members distinct count)
+- Account-level metric
+
+The label "Fraud Networks" was ambiguous and misleading because the same term represented two different entities.
+
+Decision:
+
+Refine terminology to clearly distinguish between cluster-level and account-level network metrics.
+
+Implementation:
+
+**1. Data Pipeline Page Changes:**
+
+Label Change:
+- Before: "Fraud Networks: 80"
+- After: "Suspicious Clusters Detected: 80"
+
+Meaning:
+- Number of suspicious graph clusters identified by network analysis
+- Source: account_clusters table (COUNT of clusters)
+- Cluster-level metric
+
+Tooltip Added:
+"Suspicious Clusters Detected: Number of suspicious account clusters detected through graph network analysis based on shared devices, IP addresses, or other network relationships."
+
+**2. Risk Overview Page Changes:**
+
+Label Change:
+- Before: "Fraud Networks: 240"
+- After: "Network-linked Accounts: 240"
+
+Meaning:
+- Number of user accounts involved in suspicious network clusters
+- Source: cluster_members table (COUNT DISTINCT user_id)
+- Account-level metric
+
+Tooltip Added:
+"Network-linked Accounts: Number of accounts connected to suspicious networks through shared devices, IP addresses, or other graph relationships."
+
+Subtitle Updated:
+- Before: "Users linked to suspicious network clusters"
+- After: "Accounts in suspicious network clusters"
+
+**3. Investigation / Risk Evidence Pages:**
+
+Reviewed for "Fraud Networks" terminology - no changes needed as these pages use:
+- "Network Signals" (relationship evidence)
+- "Network Evidence" (cluster information)
+- These terms are already specific and clear
+
+**4. Metric Hierarchy Clarification:**
+
+Graph analysis pipeline hierarchy now clearly reflected in UI:
+
+```
+Raw relationships (device/IP/fingerprint sharing)
+        ↓
+Graph clustering
+        ↓
+Suspicious Clusters Detected (cluster-level)
+        ↓
+Cluster members
+        ↓
+Network-linked Accounts (account-level)
+```
+
+**5. Regression Verification:**
+
+After implementation verified:
+
+Data Pipeline:
+- Suspicious Clusters Detected = account_clusters count
+- Example: 80 clusters
+
+Risk Overview:
+- Network-linked Accounts = distinct users in cluster_members
+- Example: 240 accounts
+
+Both metrics can coexist with different values (80 ≠ 240) which is expected and correct.
+
+Frontend Changes:
+
+1. DataPipeline.tsx:
+   - Added SimpleMetricTooltip import
+   - Updated "Fraud Networks" → "Suspicious Clusters Detected"
+   - Added tooltip with cluster-level definition
+   - API field name unchanged (fraud_networks)
+
+2. RiskCommandCenter.tsx:
+   - Updated "Fraud Networks" → "Network-linked Accounts"
+   - Added tooltip with account-level definition
+   - Updated subtitle text
+   - API field name unchanged (fraud_networks)
+
+Backend Changes:
+- None (API structure, field names, and calculation logic unchanged)
+
+Documentation Updates:
+
+1. DATA_CONTRACT.md:
+   - Updated Risk Overview section (Network-linked Accounts definition)
+   - Updated Pipeline Status section (Suspicious Clusters Detected definition)
+   - Added UI label mappings for clarity
+
+2. MVP_PRODUCT_REFINEMENT_LOG.md (this entry):
+   - Documented the terminology refinement
+   - Explained cluster-level vs account-level distinction
+
+Product Impact:
+
+Before: Ambiguous "Fraud Networks" label represented different concepts on different pages
+After: Clear, specific terminology that indicates whether metric is cluster-level or account-level
+
+This aligns the platform with enterprise fraud/risk management platforms where analysts understand whether a metric represents:
+- Entities (accounts/users)
+- Clusters (groups of connected entities)
+- Relationships (connections between entities)
+
+No changes to:
+- Backend calculation logic
+- Database schema
+- Graph detection algorithm
+- Risk scoring logic
+- API response structure
+- Existing thresholds
+
+The refinement only improves display semantics and user understanding.
+
+---
+
 ## Project Positioning
 
 AI Risk Command Center is an MVP demonstration platform.
@@ -1782,3 +2004,332 @@ Future Enhancements:
 - Add more model metadata fields (training_data_size, hyperparameters, etc.)
 - Support multiple algorithms (XGBoost, Random Forest, etc.)
 - Model comparison feature (compare metrics across versions)
+
+---
+
+# Pipeline Results Metrics Alignment
+
+Date: 2026-07-19
+
+Issue:
+
+Pipeline Results was mixing different risk concepts:
+
+1. Detection Layer (graph analysis):
+   - account_clusters table = detected fraud networks
+   - cluster_members table = users belonging to those networks
+
+2. Scoring Layer (ML/Rule/Graph):
+   - Generates risk scores for users
+
+3. Case Management Layer:
+   - risk_events/cases = investigation cases created after scoring
+
+Current Problem:
+- "High Risk Accounts: 135" came from risk_events/cases table
+- Should be "Risky Accounts Detected: 240" from cluster_members distinct user_ids
+- "Features Generated: 2000" was misleading (users, not features)
+
+Decision:
+
+Fix Pipeline Results to show DETECTION output, not investigation cases.
+
+Implementation:
+
+Backend Changes (backend/app/services/pipeline_service.py):
+
+1. Add ClusterMember import
+2. Query distinct risky accounts from detection layer:
+   ```python
+   risky_accounts_detected = await self.db.scalar(
+       select(func.count(func.distinct(ClusterMember.user_id)))
+   ) or 0
+   ```
+
+3. Update results dictionary:
+   - Rename "high_risk_accounts" → "risky_accounts_detected"
+   - Use cluster_members distinct count instead of risk_event_count
+   - Rename "features_generated" → "feature_vectors_generated"
+   - Keep fraud_networks as cluster_count (already correct)
+
+Frontend Changes (frontend/src/services/api.ts):
+
+1. Update PipelineStatus interface:
+   - high_risk_accounts → risky_accounts_detected
+   - features_generated → feature_vectors_generated
+
+Frontend Changes (frontend/src/pages/DataPipeline.tsx):
+
+1. Update Pipeline Results card labels:
+   - "High Risk Accounts" → "Risky Accounts Detected"
+   - "Features Generated" → "Users Processed"
+   - Update field references to use new names
+
+Data Contract Updates (DATA_CONTRACT.md):
+
+1. Update results field definitions:
+   - Document that risky_accounts_detected comes from cluster_members distinct user_ids
+   - Document that fraud_networks is account_clusters count
+   - Document that feature_vectors_generated is feature_table count
+
+Result:
+
+Before:
+- High Risk Accounts: 135 (from risk_events table - wrong concept)
+- Features Generated: 2000 (misleading - these are users, not features)
+
+After:
+- Risky Accounts Detected: 240 (from cluster_members - correct detection metric)
+- Users Processed: 2000 (clear what this represents)
+
+Product Impact:
+
+Pipeline Results now correctly answers:
+"What did the pipeline detect?"
+
+NOT:
+"How many investigation cases were created?"
+
+This aligns the platform with enterprise fraud platform terminology:
+- Detection Layer: Graph-based network detection
+- Scoring Layer: ML/Rule/Graph risk scores
+- Case Management: Investigation workflow (separate concern)
+
+No changes to:
+- ML scoring logic
+- Rule engine thresholds
+- Graph detection algorithm
+- risk_events generation logic
+
+Technical Implementation Summary:
+
+Files Modified:
+1. backend/app/services/pipeline_service.py (added ClusterMember import, updated metrics)
+2. frontend/src/services/api.ts (updated PipelineStatus interface)
+3. frontend/src/pages/DataPipeline.tsx (updated labels and field names)
+4. DATA_CONTRACT.md (updated results field documentation)
+5. MVP_PRODUCT_REFINEMENT_LOG.md (this entry)
+
+Database verification:
+- account_clusters = 40 (Fraud Networks)
+- cluster_members distinct users = 240 (Risky Accounts Detected)
+- feature_table rows = 2000 (Users Processed)
+
+---
+
+# DataPipeline State Management Refactor
+
+Date: 2026-07-19
+
+Problem:
+
+The DataPipeline page had inconsistent state management with multiple issues:
+
+1. **Frontend-driven state with no backend persistence**
+   - Upload status tracked in React state only
+   - Lost on page refresh
+   - No way to see if data was previously uploaded
+
+2. **Single loading state for all operations**
+   - One `loading` boolean for both upload and pipeline execution
+   - Can't distinguish which operation is running
+   - Poor UX during long-running operations
+
+3. **Manual stage status updates**
+   - Frontend manually constructed stage status after pipeline run
+   - Not derived from backend state
+   - Status mapping was lossy and inconsistent
+
+4. **No reset capability**
+   - No way to clear pipeline state and start fresh
+   - Had to manually clear database
+   - Poor user experience for starting over
+
+5. **Backend returned hardcoded status**
+   - `get_pipeline_status()` returned PENDING for most stages
+   - Only `data_sources` was dynamic
+   - No way to know actual pipeline state
+
+Decision:
+
+Implement backend-driven state management where:
+- Backend is the single source of truth for all pipeline state
+- Frontend derives all state from backend API
+- No manual state construction in frontend
+- Proper loading states for each operation
+- Reset functionality for starting fresh
+
+Implementation:
+
+Backend Changes (backend/app/services/pipeline_service.py):
+
+1. Enhanced `get_pipeline_status()` method:
+   - Added `upload_status`, `upload_timestamp`, `upload_counts` fields
+   - All stage statuses derived from database inspection
+   - Returns `results` when pipeline completed
+
+2. Database-based status determination:
+   ```python
+   # Determine statuses based on data presence
+   has_data = user_count > 0 and device_count > 0 and trade_count > 0 and withdrawal_count > 0
+   
+   upload_status = COMPLETED if has_data else PENDING
+   feature_engineering_status = COMPLETED if feature_count > 0 else PENDING
+   graph_analysis_status = COMPLETED if cluster_count > 0 else PENDING
+   ml_scoring_status = COMPLETED if risk_event_count > 0 else PENDING
+   ```
+
+3. New `POST /api/pipeline/reset` endpoint:
+   - Clears all data via `clear_all_data()`
+   - Returns fresh status after reset
+   - Simplifies frontend reset workflow
+
+Backend Changes (backend/app/models/schemas.py):
+
+1. Enhanced `PipelineStatusResponse` schema:
+   - Added `upload_status: str` (PENDING/COMPLETED/FAILED)
+   - Added `upload_timestamp: Optional[str]`
+   - Added `upload_counts: Optional[Dict[str, int]]`
+   - Added `results: Optional[Dict[str, Any]]`
+
+2. Added `Any` to imports (fix for NameError)
+
+Frontend Changes (frontend/src/pages/DataPipeline.tsx):
+
+1. Split loading states:
+   ```typescript
+   const [uploadStatus, setUploadStatus] = useState<UploadStatus>('INITIAL');
+   const [uploading, setUploading] = useState(false);
+   const [runningPipeline, setRunningPipeline] = useState(false);
+   const [pipelineStatus, setPipelineStatus] = useState<PipelineStatus | null>(null);
+   const [files, setFiles] = useState<Record<string, File>>({});
+   ```
+
+2. Upload button states:
+   - INITIAL → UPLOADING → UPLOADED / FAILED
+   - Disabled when UPLOADING or UPLOADED
+   - Shows correct text for each state
+
+3. Run Pipeline button:
+   - Disabled until `upload_status === 'COMPLETED'`
+   - Only shows loading during `runningPipeline`
+
+4. Removed manual state updates:
+   - No more `setUploadedDatasets()` calls
+   - No more manual stage construction
+   - All state derived from backend
+
+5. Added Reset Pipeline button:
+   - Only shows when `upload_status === 'COMPLETED'`
+   - Calls `/api/pipeline/reset` endpoint
+   - Clears local file selection state
+   - Reloads backend status
+
+6. File selection UI improvements:
+   - Shows selected files with blue border before upload
+   - Shows uploaded files with green border
+   - Remove button for selected files
+   - Clear visual feedback for each state
+
+Frontend Changes (frontend/src/services/api.ts):
+
+1. Updated `PipelineStatus` interface:
+   ```typescript
+   export interface PipelineStatus {
+     upload_status: string;
+     upload_timestamp?: string;
+     upload_counts?: { users, devices, trades, withdrawals };
+     data_sources: string;
+     dataset_validation: string;
+     feature_engineering: string;
+     ml_scoring: string;
+     graph_analysis: string;
+     results?: { total_records, users, high_risk_accounts, fraud_networks, features_generated };
+   }
+   ```
+
+2. Added `resetPipeline()` method:
+   ```typescript
+   resetPipeline: () => api.post<{
+     message: string;
+     deleted_counts: Record<string, number>;
+     total_deleted: number;
+     status: PipelineStatus;
+   }>('/api/pipeline/reset')
+   ```
+
+Data Contract Updates (DATA_CONTRACT.md):
+
+1. Updated Pipeline Status Contract section:
+   - Enhanced API response documentation
+   - Added upload status fields
+   - Added results fields
+   - Updated frontend mapping documentation
+
+Result:
+
+**Before:**
+- State lost on page refresh
+- Can't tell if data was uploaded
+- Single loading state for all operations
+- Manual stage status construction
+- No way to reset pipeline
+
+**After:**
+- Backend is single source of truth
+- All state persists and survives refresh
+- Separate loading states for upload and pipeline execution
+- All stage statuses from backend
+- Reset button for starting fresh
+- Clear visual feedback for file selection
+
+Product Impact:
+
+Before: Users couldn't tell if data was already uploaded, had no way to start over, and couldn't see which operation was running.
+
+After: Users can:
+- See upload status at a glance
+- Know if pipeline has been run
+- See which operation is in progress
+- Reset pipeline to start fresh
+- Understand current pipeline state
+
+Technical Implementation Summary:
+
+Files Modified:
+1. backend/app/services/pipeline_service.py (enhanced status logic)
+2. backend/app/api/routes/pipeline.py (added reset endpoint)
+3. backend/app/models/schemas.py (enhanced schemas, added Any import)
+4. frontend/src/pages/DataPipeline.tsx (refactored state management)
+5. frontend/src/services/api.ts (updated types, added reset method)
+6. DATA_CONTRACT.md (updated Pipeline Status Contract)
+7. MVP_PRODUCT_REFINEMENT_LOG.md (this entry)
+
+No changes to:
+- Risk scoring logic (RiskScoringService)
+- ML model inference (MLInferenceService)
+- Graph analysis (GraphAnalysisService)
+- Feature engineering (FeatureEngineeringService)
+- Any existing detection behavior
+- Database schema (using existing tables)
+
+Data Flow:
+
+1. Page load: Frontend calls `GET /api/pipeline/status`
+2. Backend inspects database and returns current state
+3. Frontend derives all UI state from backend response
+4. User selects files: Local state updates immediately (blue border)
+5. User clicks upload: `uploading = true`, calls API
+6. Upload completes: Reload status, `upload_status = COMPLETED`
+7. User clicks run pipeline: `runningPipeline = true`, calls API
+8. Pipeline completes: Reload status, stages show COMPLETED
+9. User clicks reset: Clear data, reload status, back to INITIAL
+
+State Management Principles:
+
+✅ Backend is single source of truth
+✅ Frontend derives all state from backend
+✅ No manual state construction
+✅ Clear visual feedback for each state
+✅ Operations can run independently
+✅ Reset capability for starting fresh

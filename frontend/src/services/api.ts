@@ -4,7 +4,9 @@
  * Handles all backend API communication with proper typing.
  */
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+// In development, use empty string to leverage Vite's proxy and avoid CORS
+// In production, set VITE_API_URL to the backend API base URL
+const API_URL = import.meta.env.VITE_API_URL || '';
 
 export const api = {
   get: async <T = any>(endpoint: string): Promise<T> => {
@@ -72,16 +74,24 @@ export const riskApi = {
 
 export const pipelineApi = {
   getStatus: () => api.get<PipelineStatus>('/api/pipeline/status'),
-  uploadData: (files: { users?: File; devices?: File; trades?: File; withdrawals?: File }) => {
+  uploadData: (files: { users?: File; devices?: File; trades?: File; withdrawals?: File }, clearExisting: boolean = true) => {
     const formData = new FormData();
     if (files.users) formData.append('users', files.users);
     if (files.devices) formData.append('devices', files.devices);
     if (files.trades) formData.append('trades', files.trades);
     if (files.withdrawals) formData.append('withdrawals', files.withdrawals);
-    return api.upload<DataUploadResponse>('/api/pipeline/upload', formData);
+    // Pass clear_existing as query parameter
+    const url = `/api/pipeline/upload?clear_existing=${clearExisting ? 'true' : 'false'}`;
+    return api.upload<DataUploadResponse>(url, formData);
   },
   runPipeline: (options: { run_full_pipeline?: boolean; generate_risk_events?: boolean }) =>
     api.post<PipelineRunResult>('/api/pipeline/run', options),
+  resetPipeline: () => api.post<{
+    message: string;
+    deleted_counts: Record<string, number>;
+    total_deleted: number;
+    status: PipelineStatus;
+  }>('/api/pipeline/reset'),
 };
 
 export const casesApi = {
@@ -104,6 +114,34 @@ export const modelApi = {
   getMetrics: () => api.get<ModelMetrics>('/api/model/metrics'),
   getFeatureImportance: () => api.get<FeatureImportanceList>('/api/model/feature-importance'),
   getMonitoring: () => api.get<ModelMonitoringData>('/api/model/monitoring'),
+  trainModel: (dataset: 'historical' | 'current' = 'historical') =>
+    api.post<{
+      status: string;
+      model_id?: number;
+      model_version?: string;
+      algorithm?: string;
+      model_type?: string;
+      dataset?: string;
+      metrics?: {
+        auc?: number | null;
+        ks?: number | null;
+      };
+      feature_count?: number;
+      train_size?: number;
+      test_size?: number;
+      positive_ratio?: number;
+      deployment_status?: string;
+      message?: string;
+      error?: string;
+    }>(`/api/model/train?dataset=${dataset}`, null),
+  activateModel: (modelId: number) =>
+    api.post<{
+      status: string;
+      message: string;
+      model_id: number;
+      model_version?: string;
+      previous_models_deactivated: boolean;
+    }>(`/api/model/models/${modelId}/activate`, null),
 };
 
 // Type definitions
@@ -139,10 +177,17 @@ export interface RiskOverview {
   // Detection source analysis
   detection_sources: Array<{
     method: string;
-    detected_accounts: number;
-    detection_rate: number;
+    account_count: number;
+    percentage: number;
     color: string;
   }>;
+  // Signal combination breakdown (signal overlap analysis)
+  signal_combination_breakdown: {
+    ml_only: number;  // Accounts with only ML signal
+    rule_only: number;  // Accounts with only Rule signal
+    graph_only: number;  // Accounts with only Graph signal
+    multi_signal: number;  // Accounts with multiple signals (2 or more)
+  } | null;
 }
 
 export interface RiskEvent {
@@ -210,10 +255,31 @@ export interface Explanation {
 }
 
 export interface PipelineStatus {
+  // Upload status
+  upload_status: string;  // "PENDING" | "COMPLETED" | "FAILED"
+  upload_timestamp?: string;
+  upload_counts?: {
+    users: number;
+    devices: number;
+    trades: number;
+    withdrawals: number;
+  };
+
+  // Pipeline stages
+  data_sources: string;
   dataset_validation: string;
   feature_engineering: string;
   ml_scoring: string;
   graph_analysis: string;
+
+  // Results (available after completion)
+  results?: {
+    total_records: number;
+    users: number;
+    risky_accounts_detected: number;
+    fraud_networks: number;
+    feature_vectors_generated: number;
+  };
 }
 
 export interface DataUploadResponse {
@@ -278,12 +344,18 @@ export interface ModelMonitoringData {
   model_type?: string | null;
   feature_count?: number | null;
   deployed_at?: string;
+  // Baseline validation fields (from training)
+  baseline_validation_psi?: number | null;
+  baseline_validation_status?: 'passed' | 'failed' | 'not_validated' | null;
+  baseline_validated_at?: string;
+  // Production metrics
   metrics: {
     auc: number | null;
     ks: number | null;
-    psi: number | null;
+    psi: number | null;  // Latest production PSI snapshot
   };
   psi_status: 'stable' | 'warning' | 'drift' | 'unknown';
+  psi_calculated_at?: string;
   psi_features: PSIFeature[];
 }
 

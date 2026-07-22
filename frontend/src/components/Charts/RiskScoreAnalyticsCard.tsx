@@ -16,7 +16,7 @@ interface RiskScoreAnalyticsCardProps {
 
 const mockStatistics: RiskScoreStatistics = {
   average: 52.3,
-  threshold: 80.0,
+  threshold: 70.0,
   maximum: 98.2,
 };
 
@@ -58,6 +58,7 @@ export default function RiskScoreAnalyticsCard({
       <div className="flex items-center justify-between mb-2">
         <h3 className="text-sm font-semibold text-slate-700">Risk Score Analytics</h3>
       </div>
+      <p className="text-xs text-slate-500 mb-4">Overview of model scoring range and risk threshold positioning</p>
 
       <div className="flex-1 flex flex-col justify-center space-y-2 overflow-visible">
         {metrics.map((metric) => (
@@ -74,9 +75,7 @@ export default function RiskScoreAnalyticsCard({
               <span className={`text-sm font-semibold flex-shrink-0 ${
                 metric.isThreshold ? 'text-red-600' : 'text-slate-900'
               }`}>
-                {metric.isThreshold ? Math.round(metric.value) :
-                 metric.isStatistic ? metric.value.toFixed(1) :
-                 Math.round(metric.value)}
+                {metric.value.toFixed(2)}
               </span>
             </div>
             {/* Bar visualization */}

@@ -30,6 +30,24 @@ class LightGBMTrainer:
     - Model artifact saving
     """
 
+    # Official 13 risk features for model training
+    # Single source of truth for feature count
+    OFFICIAL_FEATURES = [
+        'trade_frequency_7d',
+        'trade_frequency_24h',
+        'trade_volume_24h',
+        'withdrawal_volume_24h',
+        'account_age_days',
+        'avg_trade_size',
+        'shared_device_count',
+        'linked_account_count',
+        'unique_ip_count',
+        'withdrawal_frequency_24h',
+        'withdrawal_risk_score',
+        'opposite_trade_ratio',
+        'active_days_count',
+    ]
+
     def __init__(self, model_path: Optional[str] = None):
         """Initialize trainer with model path."""
         self.model_path = model_path or settings.MODEL_PATH
@@ -131,7 +149,11 @@ class LightGBMTrainer:
             Training results with metrics
         """
         # Separate features and target
-        feature_cols = [c for c in features_df.columns if c not in ['user_id', 'is_risky']]
+        # Use only the official 13 risk features (single source of truth)
+        feature_cols = [c for c in self.OFFICIAL_FEATURES if c in features_df.columns]
+
+        if len(feature_cols) != 13:
+            raise ValueError(f"Expected 13 official features, found {len(feature_cols)}: {feature_cols}")
 
         X = features_df[feature_cols].copy()
         y = features_df['is_risky'].copy()
@@ -259,11 +281,12 @@ class LightGBMTrainer:
         from app.ml.psi import PSIAnalyzer
 
         if output_path is None:
-            output_path = f"{self.model_path}/feature_distribution.json"
+            output_path = str(Path(self.model_path) / "feature_baseline.json")
 
         analyzer = PSIAnalyzer(n_bins=10)
 
-        feature_cols = [c for c in features_df.columns if c not in ['user_id', 'is_risky']]
+        # Use only the official 13 risk features for baseline
+        feature_cols = [c for c in self.OFFICIAL_FEATURES if c in features_df.columns]
 
         baseline = analyzer.create_baseline_distribution(features_df, feature_cols)
         analyzer.save_baseline(baseline, output_path)

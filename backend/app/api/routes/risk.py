@@ -30,6 +30,75 @@ from app.config import settings
 router = APIRouter(prefix="/risk", tags=["Risk"])
 
 
+def _generate_model_based_explanation(
+    risk_event: dict,
+    factors: list[dict],
+    graph_data: dict
+) -> dict:
+    """
+    Generate model-based explanation from risk analysis outputs.
+
+    This is the DEFAULT behavior when LLM is not enabled.
+    Creates structured explanations from ML scores, rule hits, and graph signals.
+
+    Args:
+        risk_event: Risk event data with scores
+        factors: List of risk factor details
+        graph_data: Optional relationship graph data
+
+    Returns:
+        Dict with summary, key_findings, and recommended_action
+    """
+    # Extract scores
+    ml_score = risk_event.get('ml_score', 0)
+    rule_score = risk_event.get('rule_score', 0)
+    graph_score = risk_event.get('graph_score', 0)
+    risk_score = risk_event.get('risk_score', 0)
+    risk_level = risk_event.get('risk_level', 'UNKNOWN')
+
+    # Build summary from model outputs
+    summary = (
+        f"This account received a {risk_level.lower()} risk score ({risk_score:.2f}/100). "
+        f"Primary concern: {risk_event.get('primary_reason', 'Suspicious activity detected')}."
+    )
+
+    # Build contributing factors from signal scores
+    key_findings = []
+
+    if ml_score > 0:
+        key_findings.append(f"ML Signal Score: {ml_score:.2f}")
+
+    if rule_score > 0:
+        key_findings.append(f"Rule Engine Signal Score: {rule_score:.2f}")
+
+    if graph_score > 0:
+        key_findings.append(f"Graph Network Signal Score: {graph_score:.2f}")
+
+    # Add specific risk factors if available
+    for factor in factors[:3]:  # Top 3 factors
+        factor_name = factor.get('factor_name', 'Unknown factor')
+        key_findings.append(f"Elevated {factor_name}")
+
+    # Add network information if applicable
+    if graph_data and graph_data.get('nodes'):
+        connected_count = len(graph_data['nodes']) - 1  # Exclude self
+        if connected_count > 0:
+            key_findings.append(f"Connected to {connected_count} other account(s) through shared devices/IPs")
+
+    # If no findings, add default
+    if not key_findings:
+        key_findings.append("Risk signals detected through analysis")
+
+    # Build recommended action from risk event
+    recommended_action = risk_event.get('recommended_action', 'Review case')
+
+    return {
+        "summary": summary,
+        "key_findings": key_findings,
+        "recommended_action": recommended_action
+    }
+
+
 def _get_detection_methods(
     ml_score: Optional[float],
     rule_score: Optional[float],
@@ -559,7 +628,15 @@ async def generate_explanation(
     request: ExplanationRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """Generate AI-powered investigation explanation."""
+    """
+    Generate risk explanation for investigation.
+
+    Behavior:
+    - Default: Returns model-based explanation from risk analysis outputs
+    - Optional (ENABLE_LLM_EXPLANATION=true): Uses LLM for natural language summaries
+
+    The platform operates fully without LLM integration.
+    """
     # Get risk event
     result = await db.execute(
         select(RiskEvent)
@@ -585,13 +662,23 @@ async def generate_explanation(
     graph_data = await graph_service.get_user_graph(request.user_id, depth=1)
 
     # Generate explanation
-    llm_service = LLMExplanationService()
-    explanation = await llm_service.generate_explanation(
-        user_id=request.user_id,
-        risk_event=RiskEventResponse.model_validate(risk_event).model_dump(),
-        risk_factors=[f.model_dump() for f in factors],
-        graph_data=graph_data.model_dump(),
-    )
+    # Default behavior: model-based explanation (no LLM dependency)
+    if settings.ENABLE_LLM_EXPLANATION and settings.ANTHROPIC_API_KEY:
+        # LLM-enabled: Use LLM service for natural language summaries
+        llm_service = LLMExplanationService()
+        explanation = await llm_service.generate_explanation(
+            user_id=request.user_id,
+            risk_event=RiskEventResponse.model_validate(risk_event).model_dump(),
+            risk_factors=[f.model_dump() for f in factors],
+            graph_data=graph_data.model_dump(),
+        )
+    else:
+        # Default: Generate model-based explanation from risk outputs
+        explanation = _generate_model_based_explanation(
+            risk_event=RiskEventResponse.model_validate(risk_event).model_dump(),
+            factors=[f.model_dump() for f in factors],
+            graph_data=graph_data.model_dump(),
+        )
 
     return ExplanationResponse(**explanation)
 

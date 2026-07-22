@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     """Application settings with environment variable support."""
 
     # Application
-    APP_NAME: str = "Risk Platform API"
+    APP_NAME: str = "Risk Intelligence Platform API"
     APP_VERSION: str = "0.1.0"
     DEBUG: bool = False
 
@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     MODEL_PATH: str = MODEL_PATH_ABSOLUTE
 
     # LLM Configuration
+    # ENABLE_LLM_EXPLANATION: Control whether LLM is used for explanation generation
+    # Default: false (platform uses model-based explanations)
+    # When true: Requires ANTHROPIC_API_KEY to be set
+    ENABLE_LLM_EXPLANATION: bool = False
     ANTHROPIC_API_KEY: str = ""
     LLM_MODEL: str = "claude-3-5-sonnet-20241022"
     LLM_MAX_TOKENS: int = 2000

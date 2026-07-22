@@ -1,7 +1,12 @@
 """
-LLM Explanation Service
+LLM Explanation Service (Optional Extension)
 
-Abstracted service for generating AI-powered investigation explanations.
+Abstracted service for generating AI-assisted investigation explanations.
+This is an OPTIONAL enhancement — the platform operates fully without LLM integration.
+
+When ANTHROPIC_API_KEY is configured: LLM generates natural language case summaries
+When not configured: Returns structured explanations from model outputs
+
 Supports Claude (default) with extensibility for other providers.
 """
 from typing import Dict, List, Any, Optional
@@ -55,7 +60,7 @@ class ClaudeProvider(LLMProvider):
 
     def _default_system_prompt(self) -> str:
         """Default system prompt for risk analyst role."""
-        return """You are an expert risk analyst for a cryptocurrency exchange. Your role is to:
+        return """You are an expert risk analyst for a risk intelligence platform. Your role is to:
 
 1. Analyze risk data and explain findings clearly
 2. Identify the most critical risk factors
@@ -89,13 +94,21 @@ class OpenAIProvider(LLMProvider):
 
 class LLMExplanationService:
     """
-    LLM Explanation Service
+    LLM Explanation Service (Optional Extension)
+
+    This service provides AI-assisted natural language explanations for risk cases.
+    It is designed as an OPTIONAL enhancement — the core platform operates fully without it.
 
     Input: risk_event + factors + graph_data
-    Output: structured_explanation
+    Output: structured_explanation (with or without LLM)
 
     Service boundary: Abstracts LLM provider, handles prompt construction,
-    manages response parsing.
+    manages response parsing, provides structured fallback when LLM unavailable.
+
+    Behavior:
+    - With ANTHROPIC_API_KEY: Uses Claude for natural language generation
+    - Without API key: Returns structured explanations from model outputs
+    - On error: Falls back to structured response with error information
     """
 
     def __init__(self, provider: Optional[LLMProvider] = None):

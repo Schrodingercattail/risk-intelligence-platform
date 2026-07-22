@@ -35,7 +35,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
-    description="AI-Powered Market Integrity & Account Risk Monitoring Platform API",
+    description="Risk Intelligence Platform API - Machine Learning Driven Detection, Monitoring & Investigation",
     docs_url=f"{settings.API_PREFIX}/docs",
     openapi_url=f"{settings.API_PREFIX}/openapi.json",
     lifespan=lifespan,

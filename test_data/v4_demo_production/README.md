@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This dataset is designed for **product demonstration** of the AI-Powered Risk Intelligence Platform. It simulates a realistic production environment with meaningful fraud patterns and stable monitoring metrics.
+This dataset is designed for **product demonstration** of the Risk Intelligence Platform. It simulates a realistic production environment with meaningful fraud patterns and stable monitoring metrics.
 
 **Key Design Goal**: Showcase the platform's capabilities with realistic High/Critical risk cases while maintaining healthy PSI (0.05-0.20).
 

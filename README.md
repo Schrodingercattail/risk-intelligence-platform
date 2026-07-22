@@ -1,23 +1,90 @@
-# Risk Management Platform Prototype
+# Risk Intelligence Platform
 
-An enterprise-grade risk management platform prototype demonstrating ML-powered fraud detection, rule-based risk assessment, and graph-based network analysis for cryptocurrency exchanges.
+**Machine Learning–Driven Detection, Monitoring & Investigation**
+
+A machine learning-driven risk detection and monitoring platform designed to identify suspicious behaviors, combine multiple risk signals, and support investigation workflows across risk-sensitive industries.
+
+---
 
 ## Project Overview
 
-This is an **extensible risk management platform prototype** designed to showcase enterprise-level fraud detection capabilities. The platform implements a complete risk detection pipeline from data ingestion through scoring, monitoring, and alerting.
+This is an **extensible risk intelligence platform** that demonstrates how modern risk systems can combine data pipelines, machine learning models, rule engines, graph-based signals, monitoring systems, and investigation workflows into a unified architecture.
+
+The platform implements a complete risk detection pipeline from data ingestion through scoring, monitoring, and alerting. While demonstrated with trading-inspired datasets, the underlying architecture is **industry-agnostic** and transferable to multiple domains.
 
 ### Core Capabilities
 
-- **ML Risk Scoring** - LightGBM-powered pattern recognition with AUC > 0.85
-- **Rule Engine** - Expert-defined risk signals for known fraud patterns
-- **Graph Detection** - Network analysis for coordinated fraud rings
-- **Risk Event Lifecycle** - Complete audit trail with pipeline traceability
-- **PSI Monitoring** - Model drift detection with Population Stability Index
-- **Multi-Signal Fusion** - Weighted combination with business override logic
+**Risk Detection**
+- ML Risk Scoring — LightGBM-powered pattern recognition (AUC: 0.85, KS: 0.43)
+- Rule Engine — Expert-defined risk signals for known fraud patterns
+- Graph Detection — Network analysis for coordinated behavior rings
+- Multi-Signal Fusion — Weighted combination with business override logic
+
+**Risk Monitoring**
+- PSI Drift Detection — Population Stability Index for model drift monitoring
+- Model Performance Tracking — AUC, KS, feature distribution monitoring
+- Baseline Validation — Automated comparison against training distributions
+
+**Investigation Support**
+- Risk Event Lifecycle — Complete audit trail with pipeline traceability
+- Signal Attribution — Which detection methods contributed to each risk score
+- Evidence Factors — Detailed feature-level explanations for risk decisions
+- Investigation Queue — Filterable workflow for analyst review
 
 ### Design Philosophy
 
-This platform is an **investigation support system**, not an auto-ban system. The final enforcement decision remains with human operators.
+This platform is an **investigation support system**, not an auto-ban system. The final enforcement decision remains with human operators. The goal is to surface risks, explain them, and enable efficient investigation.
+
+---
+
+## Project Motivation
+
+Risk management systems across industries share similar technical challenges:
+
+- Identifying abnormal user behavior patterns
+- Combining multiple risk signals into coherent decisions
+- Explaining risk decisions to investigators and regulators
+- Monitoring model performance over time
+- Detecting when production data drifts from training conditions
+- Supporting end-to-end investigation workflows
+
+This project abstracts these common challenges into a **reusable Risk Intelligence Platform architecture**. The goal is not to build a single-industry solution, but to demonstrate how modern risk systems can integrate:
+
+- Data pipelines and feature engineering
+- Machine learning models with monitoring
+- Rule-based expert systems
+- Graph-based relationship analysis
+- Investigation workflow support
+
+---
+
+## Business Background
+
+This project is inspired by risk management scenarios from both **consumer finance** and **digital asset platforms**, but the architecture is designed to be **industry-agnostic**.
+
+**From Consumer Finance:**
+- Fraud detection and behavioral risk scoring
+- Machine learning-based risk models
+- Model monitoring and governance requirements
+- Account lifecycle risk assessment
+
+**From Digital Asset Trading:**
+- Abnormal transaction behavior detection
+- Coordinated account activity analysis
+- Suspicious trading pattern identification
+- Account relationship network analysis
+
+**Applicable Domains:**
+- Fintech & Consumer Finance
+- Fraud Prevention & Account Security
+- Digital Asset Platforms & Exchanges
+- E-Commerce Risk Control
+- Marketplace Integrity
+- Any risk-sensitive domain requiring behavior analysis
+
+Although the demonstration datasets use synthetic trading scenarios, the underlying architecture transfers to multiple risk-sensitive industries. The platform demonstrates **general risk intelligence patterns** rather than industry-specific implementations.
+
+---
 
 ## Architecture Overview
 
@@ -34,8 +101,8 @@ This platform is an **investigation support system**, not an auto-ban system. Th
 ┌─────────────────────────────────────────────────────────────┐
 │               FEATURE ENGINEERING PIPELINE                    │
 ├─────────────────────────────────────────────────────────────┤
-│  13 Risk Features: Device Patterns, Trading Behavior,       │
-│  Account Attributes, Withdrawal Activity                     │
+│  13 Risk Features: Device Patterns, Behavioral Activity,    │
+│  Account Attributes, Transaction Patterns                   │
 └─────────────────────────────────────────────────────────────┘
                             │
                             ▼
@@ -69,14 +136,37 @@ This platform is an **investigation support system**, not an auto-ban system. Th
 └─────────────────────────────────────────────────────────────┘
 ```
 
+### Data Architecture Explanation
+
+**Why CSV Datasets?**
+
+Enterprise production databases cannot be accessed in a personal portfolio environment. This project uses **synthetic production-like datasets** that demonstrate real-world risk patterns while maintaining data privacy.
+
+**Current Workflow:**
+```
+Dataset Upload → Feature Engineering → ML Scoring → Risk Detection → Monitoring → Investigation
+```
+
+**Future Enterprise Extension:**
+- Connect to enterprise databases (PostgreSQL, MySQL, MongoDB, Snowflake, BigQuery)
+- Integrate with existing data pipelines (Kafka, Kinesis, data lakes)
+- Connect with existing case management systems
+- Continue development of full risk case lifecycle
+
+The platform architecture is designed for this extension path—the CSV-based workflow is a demonstration proxy for production data integration.
+
+---
+
 ## Technology Stack
 
-- **Backend**: Python 3.12+, FastAPI, PostgreSQL, SQLAlchemy
-- **Frontend**: React, TypeScript, Tailwind CSS, Recharts
-- **ML**: LightGBM, scikit-learn, pandas
-- **Graph**: NetworkX for relationship analysis
-- **Monitoring**: PSI for model drift detection
-- **Deployment**: Docker Compose
+**Backend:** Python 3.12+, FastAPI, PostgreSQL, SQLAlchemy, Alembic
+**Frontend:** React, TypeScript, Tailwind CSS, Recharts
+**Machine Learning:** LightGBM, scikit-learn, pandas, numpy, joblib
+**Graph Analysis:** NetworkX for relationship detection
+**Monitoring:** PSI for population stability monitoring
+**Deployment:** Docker Compose
+
+---
 
 ## Current Scope
 
@@ -129,7 +219,63 @@ This platform is an **investigation support system**, not an auto-ban system. Th
 - Automated retraining based on PSI thresholds
 - Real-time alerting and notifications
 - Advanced graph analytics with temporal patterns
-- Explainable AI enhancements
+
+---
+
+## Model Explainability & AI Enhancement
+
+### Current ML Implementation
+
+**Risk Scoring:**
+- LightGBM gradient boosting model (AUC: 0.85, KS: 0.43)
+- 13 engineered features (device patterns, behavioral activity, account attributes)
+- Multi-signal fusion (ML + Rules + Graph)
+
+**Explainability:**
+- Model-based explanations from risk analysis outputs
+- Signal attribution (ML, Rule, Graph contributions)
+- Evidence factors for each risk event
+- Investigation guidance based on risk levels
+
+**Current Implementation Status:**
+The Investigation page displays model-generated explanations:
+- Risk summary with score breakdown
+- Contributing factors (ML score, Rule score, Graph score)
+- Recommended analyst action
+- Evidence factors
+
+These explanations are generated from **model outputs and business logic**, not LLM text generation.
+
+### Optional AI Enhancement
+
+The platform includes an **optional LLM integration** for natural language explanation generation:
+
+**Configuration:**
+```bash
+# .env file
+ENABLE_LLM_EXPLANATION=true
+ANTHROPIC_API_KEY=your_key_here
+```
+
+**When Enabled:**
+- LLM generates natural language case summaries
+- Analyst-friendly narrative explanations
+- Investigation workflow assistance
+
+**Default Behavior (LLM Disabled):**
+- Model-based explanations from risk outputs
+- No API key required
+- Core functionality unaffected
+
+**Architecture:**
+The `/explain` endpoint works in both modes:
+- Without LLM: Returns structured model-based explanations
+- With LLM: Returns natural language summaries
+- Failure safety: Falls back to model-based on error
+
+The platform operates **fully without LLM integration**. LLM is an optional enhancement for narrative explanations, not a dependency for risk scoring or investigation workflow.
+
+---
 
 ## Production Deployment Considerations
 
@@ -151,15 +297,17 @@ Current: Dataset → Platform → Risk Event
 Future:  Enterprise Data → Platform → Risk Event → Case System → Resolution
 ```
 
-**Data Integration Options**
+**Data Integration Options:**
 - Database Connectors (PostgreSQL, MySQL, MongoDB)
 - Data Warehouse (Snowflake, BigQuery, Redshift)
 - Data Lake (S3, ADLS, HDFS)
 - Streaming (Kafka, Kinesis, Pub/Sub)
 
-**Case Management Directions**
-1. **Internal Workflow**: Build complete case lifecycle within platform
-2. **External Integration**: API-based connection to existing case systems
+**Case Management Directions:**
+1. **Internal Workflow:** Build complete case lifecycle within platform
+2. **External Integration:** API-based connection to existing case systems
+
+---
 
 ## Project Structure
 
@@ -196,6 +344,8 @@ risk-platform-demo/
 │   └── validation-report.md
 └── docker-compose.yml
 ```
+
+---
 
 ## Quick Start
 
@@ -241,6 +391,8 @@ npm install
 npm run dev
 ```
 
+---
+
 ## Model Training
 
 ```bash
@@ -251,18 +403,29 @@ python ml-models/training/train_risk_model.py --source csv
 python ml-models/training/train_risk_model.py --source database
 ```
 
-## Risk Level Override
+---
 
-The platform implements a **business severity layer** for coordinated fraud detection.
+## Risk Level Determination
 
-**Override Condition** (when ALL three are true):
-- ML score ≥ 80
-- Rule score ≥ 40  
-- Graph score ≥ 50
+**Two-Path CRITICAL Logic:**
 
-**Result**: Risk level elevated to CRITICAL, regardless of weighted score.
+**Path 1: Coordinated Fraud Override**
+- When ML ≥ 80, Rule ≥ 40, Graph ≥ 50: Elevates to CRITICAL
+- Handles coordinated behavior edge cases
+- Does not modify weighted score, only risk level
 
-This handles edge cases where weighted combination may underrepresent coordinated manipulation threat levels.
+**Path 2: High Scoring**
+- When final_score ≥ 90: Automatically CRITICAL
+- Natural extension of HIGH (≥ 70) risk band
+- Top ~2-5% of scores achieve CRITICAL
+
+**Risk Level Hierarchy:**
+- CRITICAL: ≥ 90 (or override condition met)
+- HIGH: 70 - 89
+- MEDIUM: 50 - 69
+- LOW: < 50
+
+---
 
 ## Model Metrics
 
@@ -271,6 +434,8 @@ This handles edge cases where weighted combination may underrepresent coordinate
 | AUC | 0.85 | > 0.75 | ✅ Excellent |
 | KS | 0.43 | > 0.30 | ✅ Strong |
 | PSI | < 0.1 | < 0.10 | ✅ Stable |
+
+---
 
 ## Documentation
 
@@ -282,6 +447,8 @@ This handles edge cases where weighted combination may underrepresent coordinate
 - [Validation Report](docs/validation-report.md)
 - [Test Data Catalog](test_data/README.md)
 
+---
+
 ## Configuration
 
 Environment variables (see `.env.example`):
@@ -290,8 +457,9 @@ Environment variables (see `.env.example`):
 # Database
 DATABASE_URL=postgresql://user:pass@database:5432/risk_platform
 
-# LLM API (for explanation generation)
-ANTHROPIC_API_KEY=your_key_here
+# Optional LLM Integration (default: disabled)
+ENABLE_LLM_EXPLANATION=false
+ANTHROPIC_API_KEY=
 
 # Risk Scoring Weights
 ML_WEIGHT=0.5
@@ -303,9 +471,45 @@ HIGH_RISK_THRESHOLD=0.7
 MEDIUM_RISK_THRESHOLD=0.5
 ```
 
+**Note:** The platform operates fully without LLM integration. Set `ENABLE_LLM_EXPLANATION=true` only if you want natural language explanation summaries.
+
+---
+
 ## Development
 
 See `CLAUDE.md` for detailed development guidance and architecture documentation.
+
+---
+
+## Data Disclaimer
+
+**All datasets in this repository are synthetic.**
+
+This project uses demonstration datasets for validation and testing purposes:
+
+- ✅ All user accounts, devices, transactions, and activity data are synthetically generated
+- ✅ No real customer data is included
+- ✅ No proprietary company information is included
+- ✅ No actual exchange or trading platform data is used
+
+**Data Scenarios:**
+
+The synthetic datasets are designed to demonstrate common risk management patterns:
+- Abnormal behavioral patterns (high-frequency activity, unusual timing)
+- Coordinated account activity (shared devices, network clusters)
+- Risk signal distribution (low, medium, high, critical cases)
+- Model drift scenarios (for PSI monitoring validation)
+
+**Industry Inspiration:**
+
+These patterns are inspired by common risk scenarios across:
+- Consumer finance (fraud detection, account risk)
+- Digital asset platforms (trading patterns, withdrawal behavior)
+- E-commerce (account abuse, fraudulent transactions)
+
+The purpose is to demonstrate technical capability in a realistic but privacy-safe manner.
+
+---
 
 ## License
 

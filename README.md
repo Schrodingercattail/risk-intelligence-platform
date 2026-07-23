@@ -12,6 +12,14 @@ This is an **extensible risk intelligence platform** that demonstrates how moder
 
 The platform implements a complete risk detection pipeline from data ingestion through scoring, monitoring, and alerting. While demonstrated with trading-inspired datasets, the underlying architecture is **industry-agnostic** and transferable to multiple domains.
 
+## Design Evolution
+
+The platform evolved from an initial dashboard wireframe exploration.
+
+Original UI concept:
+
+https://github.com/Schrodingercattail/risk-overview-wireframe
+
 ### Core Capabilities
 
 **Risk Detection**

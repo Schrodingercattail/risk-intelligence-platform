@@ -220,9 +220,9 @@ async def get_risk_overview(
     max_score = float(max_score_result.scalar() or 0.0)
 
     risk_score_statistics = {
-        "average": round(average_score, 1),
+        "average": average_score,
         "threshold": settings.HIGH_RISK_THRESHOLD * 100,  # 70.0
-        "maximum": round(max_score, 1)
+        "maximum": max_score
     }
 
     # Risk level composition

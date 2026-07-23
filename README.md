@@ -12,6 +12,30 @@ This is an **extensible risk intelligence platform** that demonstrates how moder
 
 The platform implements a complete risk detection pipeline from data ingestion through scoring, monitoring, and alerting. While demonstrated with trading-inspired datasets, the underlying architecture is **industry-agnostic** and transferable to multiple domains.
 
+---
+
+## Screenshots
+
+**Risk Command Center** — Executive risk overview with detection intelligence and investigation queue
+
+![Risk Overview](docs/screenshots/risk-overview.png)
+
+**Investigation Workspace** — Case analysis with risk evidence attribution and network signals
+
+![Investigation Case Analysis](docs/screenshots/investigation-case-analysis.png)
+
+**Risk Evidence Detail** — Transaction, network, and rule evidence with feature attribution
+
+![Investigation Risk Evidence](docs/screenshots/investigation-risk-evidence.png)
+
+**Model Monitoring** — PSI drift detection and performance metrics tracking
+
+![Model Monitoring](docs/screenshots/model-monitoring.png)
+
+**Data Pipeline** — Dataset upload and processing workflow
+
+![Data Pipeline](docs/screenshots/data-pipeline.png)
+
 ## Design Philosophy
 
 This platform is an **investigation support system**, not an auto-ban system. The final enforcement decision remains with human operators. The goal is to surface risks, explain them, and enable efficient investigation.
@@ -36,63 +60,6 @@ This platform is an **investigation support system**, not an auto-ban system. Th
 - Signal Attribution — Which detection methods contributed to each risk score
 - Evidence Factors — Detailed feature-level explanations for risk decisions
 - Investigation Queue — Filterable workflow for analyst review
-
----
-
-## Project Motivation
-
-Risk management systems across industries share similar technical challenges:
-
-- Identifying abnormal user behavior patterns
-- Combining multiple risk signals into coherent decisions
-- Explaining risk decisions to investigators and regulators
-- Monitoring model performance over time
-- Detecting when production data drifts from training conditions
-- Supporting end-to-end investigation workflows
-
-This project abstracts these common challenges into a **reusable Risk Intelligence Platform architecture**. The goal is not to build a single-industry solution, but to demonstrate how modern risk systems can integrate:
-
-- Data pipelines and feature engineering
-- Machine learning models with monitoring
-- Rule-based expert systems
-- Graph-based relationship analysis
-- Investigation workflow support
-
----
-
-## Design Evolution
-
-The platform evolved from an initial dashboard wireframe exploration.
-
-Original UI concept: https://github.com/Schrodingercattail/risk-overview-wireframe
-
----
-
-## Business Background
-
-This project is inspired by risk management scenarios from both **consumer finance** and **digital asset platforms**, but the architecture is designed to be **industry-agnostic**.
-
-**From Consumer Finance:**
-- Fraud detection and behavioral risk scoring
-- Machine learning-based risk models
-- Model monitoring and governance requirements
-- Account lifecycle risk assessment
-
-**From Digital Asset Trading:**
-- Abnormal transaction behavior detection
-- Coordinated account activity analysis
-- Suspicious trading pattern identification
-- Account relationship network analysis
-
-**Applicable Domains:**
-- Fintech & Consumer Finance
-- Fraud Prevention & Account Security
-- Digital Asset Platforms & Exchanges
-- E-Commerce Risk Control
-- Marketplace Integrity
-- Any risk-sensitive domain requiring behavior analysis
-
-Although the demonstration datasets use synthetic trading scenarios, the underlying architecture transfers to multiple risk-sensitive industries. The platform demonstrates **general risk intelligence patterns** rather than industry-specific implementations.
 
 ---
 
@@ -178,27 +145,60 @@ The platform architecture is designed for this extension path—the CSV-based wo
 
 ---
 
-## Screenshots
+## Project Motivation
 
-**Risk Command Center** — Executive risk overview with detection intelligence and investigation queue
+Risk management systems across industries share similar technical challenges:
 
-![Risk Overview](docs/screenshots/risk-overview.png)
+- Identifying abnormal user behavior patterns
+- Combining multiple risk signals into coherent decisions
+- Explaining risk decisions to investigators and regulators
+- Monitoring model performance over time
+- Detecting when production data drifts from training conditions
+- Supporting end-to-end investigation workflows
 
-**Investigation Workspace** — Case analysis with risk evidence attribution and network signals
+This project abstracts these common challenges into a **reusable Risk Intelligence Platform architecture**. The goal is not to build a single-industry solution, but to demonstrate how modern risk systems can integrate:
 
-![Investigation Case Analysis](docs/screenshots/investigation-case-analysis.png)
+- Data pipelines and feature engineering
+- Machine learning models with monitoring
+- Rule-based expert systems
+- Graph-based relationship analysis
+- Investigation workflow support
 
-**Risk Evidence Detail** — Transaction, network, and rule evidence with feature attribution
+---
 
-![Investigation Risk Evidence](docs/screenshots/investigation-risk-evidence.png)
+## Business Background
 
-**Model Monitoring** — PSI drift detection and performance metrics tracking
+This project is inspired by risk management scenarios from both **consumer finance** and **digital asset platforms**, but the architecture is designed to be **industry-agnostic**.
 
-![Model Monitoring](docs/screenshots/model-monitoring.png)
+**From Consumer Finance:**
+- Fraud detection and behavioral risk scoring
+- Machine learning-based risk models
+- Model monitoring and governance requirements
+- Account lifecycle risk assessment
 
-**Data Pipeline** — Dataset upload and processing workflow
+**From Digital Asset Trading:**
+- Abnormal transaction behavior detection
+- Coordinated account activity analysis
+- Suspicious trading pattern identification
+- Account relationship network analysis
 
-![Data Pipeline](docs/screenshots/data-pipeline.png)
+**Applicable Domains:**
+- Fintech & Consumer Finance
+- Fraud Prevention & Account Security
+- Digital Asset Platforms & Exchanges
+- E-Commerce Risk Control
+- Marketplace Integrity
+- Any risk-sensitive domain requiring behavior analysis
+
+Although the demonstration datasets use synthetic trading scenarios, the underlying architecture transfers to multiple risk-sensitive industries. The platform demonstrates **general risk intelligence patterns** rather than industry-specific implementations.
+
+---
+
+## Design Evolution
+
+The platform evolved from an initial dashboard wireframe exploration.
+
+Original UI concept: https://github.com/Schrodingercattail/risk-overview-wireframe
 
 ---
 

@@ -1,7 +1,7 @@
 """
 Demo Production Dataset Generator v4
 
-Creates a polished portfolio/demo dataset for the Risk Intelligence Platform.
+Creates a polished demonstration dataset for the Risk Intelligence Platform.
 Designed for product demonstration, NOT PSI stress testing.
 
 Key Design Goals:

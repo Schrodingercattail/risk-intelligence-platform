@@ -176,6 +176,30 @@ The platform architecture is designed for this extension path—the CSV-based wo
 
 ---
 
+## Screenshots
+
+**Risk Command Center** — Executive risk overview with detection intelligence and investigation queue
+
+![Risk Overview](docs/screenshots/risk-overview.png)
+
+**Investigation Workspace** — Case analysis with risk evidence attribution and network signals
+
+![Investigation Case Analysis](docs/screenshots/investigation-case-analysis.png)
+
+**Risk Evidence Detail** — Transaction, network, and rule evidence with feature attribution
+
+![Investigation Risk Evidence](docs/screenshots/investigation-risk-evidence.png)
+
+**Model Monitoring** — PSI drift detection and performance metrics tracking
+
+![Model Monitoring](docs/screenshots/model-monitoring.png)
+
+**Data Pipeline** — Dataset upload and processing workflow
+
+![Data Pipeline](docs/screenshots/data-pipeline.png)
+
+---
+
 ## Scope
 
 The Risk Intelligence Platform MVP implements a complete risk detection, monitoring, and investigation workflow.

@@ -43,7 +43,7 @@ This project was inspired by risk management scenarios from:
    - Behavioral risk scoring
    - Model monitoring and governance
 
-2. **Digital Asset Platforms**
+2. **Online Activity Platforms**
    - Abnormal activity pattern detection
    - Coordinated account behavior analysis
    - Network relationship analysis
@@ -57,7 +57,7 @@ The architecture is designed to be transferable to multiple domains:
 - **Fraud Prevention** - Payment fraud, account takeover, application fraud
 - **Marketplace Integrity** - E-commerce fraud, fake reviews, seller verification
 - **Account Security** - Login anomalies, credential stuffing, account sharing
-- **Digital Asset Platforms** - Activity risk, withdrawal patterns, coordinated manipulation
+- **Online Activity Platforms** - Activity risk, behavioral patterns, coordinated manipulation
 
 **Important:** This is NOT a domain-specific product. The patterns demonstrated apply broadly to risk-sensitive industries.
 
@@ -225,25 +225,23 @@ The platform is architected to support future enhancements:
 ### Avoid Language
 
 ❌ **Do NOT Use:**
-- "AI-powered crypto platform"
 - "AI-powered detection" (implies LLM when current implementation is ML)
 - "LLM-based risk decision system"
-- Domain-specific positioning like "exchange risk system" or "crypto risk system" as primary identity
-- Positioning as any domain-specific system (exchange, crypto, blockchain, etc.) as primary identity
+- Domain-specific positioning like "industry-specific risk system" or "domain-specific platform" as primary identity
+- Positioning as any domain-specific system as primary identity
 - "Automated AI decision making"
-- "Blockchain monitoring platform"
 - Any language that positions the project as domain-specific rather than industry-agnostic
 
 ### Context-Specific Language
 
 ✅ **Acceptable When Contextualized:**
-- "Inspired by digital asset trading scenarios"
-- "Applicable to risk-sensitive domains including fintech, fraud prevention, digital asset platforms, marketplace integrity, and account security"
+- "Inspired by online activity scenarios"
+- "Applicable to risk-sensitive domains including fintech, fraud prevention, online platforms, marketplace integrity, and account security"
 - "Consumer finance risk patterns"
 
 ❌ **Avoid:**
-- Positioning the entire project as crypto-specific
-- Describing as "exchange risk system" without broader context
+- Positioning the entire project as domain-specific
+- Describing as "industry-specific risk system" without broader context
 
 ---
 
@@ -303,7 +301,7 @@ This project uses demonstration datasets for validation and testing:
 - ✅ All user accounts, devices, transactions, and activity data are synthetically generated
 - ✅ No real customer data is included
 - ✅ No proprietary company information is included
-- ✅ No actual exchange or trading platform data is used
+- ✅ No actual production platform data is used
 
 **Data Scenarios:**
 
@@ -354,7 +352,7 @@ When working with this repository:
 1. **Positioning:** Refer to "Risk Intelligence Platform" or "ML-driven risk detection"
 2. **Scope:** Focus on technical architecture and system design
 3. **LLM:** Describe LLM as "optional enhancement" not core functionality
-4. **Domains:** Mention multiple applicable industries, not just crypto
+4. **Domains:** Mention multiple applicable industries, not single domains
 5. **Context:** This is an industry-agnostic prototype demonstrating ML system patterns
 
 ### For Contributors

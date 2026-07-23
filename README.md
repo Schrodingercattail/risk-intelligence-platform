@@ -12,15 +12,13 @@ This is an **extensible risk intelligence platform** that demonstrates how moder
 
 The platform implements a complete risk detection pipeline from data ingestion through scoring, monitoring, and alerting. While demonstrated with trading-inspired datasets, the underlying architecture is **industry-agnostic** and transferable to multiple domains.
 
-## Design Evolution
+## Design Philosophy
 
-The platform evolved from an initial dashboard wireframe exploration.
+This platform is an **investigation support system**, not an auto-ban system. The final enforcement decision remains with human operators. The goal is to surface risks, explain them, and enable efficient investigation.
 
-Original UI concept:
+---
 
-https://github.com/Schrodingercattail/risk-overview-wireframe
-
-### Core Capabilities
+## Core Capabilities
 
 **Risk Detection**
 - ML Risk Scoring — LightGBM-powered pattern recognition (AUC: 0.85, KS: 0.43)
@@ -38,10 +36,6 @@ https://github.com/Schrodingercattail/risk-overview-wireframe
 - Signal Attribution — Which detection methods contributed to each risk score
 - Evidence Factors — Detailed feature-level explanations for risk decisions
 - Investigation Queue — Filterable workflow for analyst review
-
-### Design Philosophy
-
-This platform is an **investigation support system**, not an auto-ban system. The final enforcement decision remains with human operators. The goal is to surface risks, explain them, and enable efficient investigation.
 
 ---
 
@@ -63,6 +57,14 @@ This project abstracts these common challenges into a **reusable Risk Intelligen
 - Rule-based expert systems
 - Graph-based relationship analysis
 - Investigation workflow support
+
+---
+
+## Design Evolution
+
+The platform evolved from an initial dashboard wireframe exploration.
+
+Original UI concept: https://github.com/Schrodingercattail/risk-overview-wireframe
 
 ---
 

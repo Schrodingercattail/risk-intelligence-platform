@@ -148,7 +148,7 @@ Although the demonstration datasets use synthetic trading scenarios, the underly
 
 **Why CSV Datasets?**
 
-Enterprise production databases cannot be accessed in a personal portfolio environment. This project uses **synthetic production-like datasets** that demonstrate real-world risk patterns while maintaining data privacy.
+Enterprise production databases cannot be accessed in a standalone open-source project environment. This project uses **synthetic production-like datasets** that demonstrate real-world risk patterns while maintaining data privacy.
 
 **Current Workflow:**
 ```
@@ -176,57 +176,113 @@ The platform architecture is designed for this extension path—the CSV-based wo
 
 ---
 
-## Current Scope
+## Scope
 
-### ✅ Implemented
+The Risk Intelligence Platform MVP implements a complete risk detection, monitoring, and investigation workflow.
 
-**Data Layer**
-- Dataset ingestion with CSV upload
-- Data validation and quality checks
-- Feature engineering pipeline (13 features)
+### Current Implementation
 
-**Detection Layer**
-- ML risk scoring with LightGBM (AUC: 0.85, KS: 0.43)
-- Rule-based expert system
-- Graph-based network analysis
-- Multi-signal fusion with weighted combination
+**Data Ingestion & Processing**
+- CSV-based dataset upload with validation
+- 13-feature engineering pipeline (device patterns, behavioral activity, account attributes, transaction patterns)
+- Data quality checks and pipeline traceability
 
-**Risk Management**
-- Risk event generation with complete traceability
-- Pipeline run tracking (pipeline_run_id, model_version)
-- Signal attribution and evidence factors
-- Risk level override for coordinated fraud
+**Risk Detection Engine**
+- ML Risk Scoring — LightGBM gradient boosting (AUC: 0.85, KS: 0.43)
+- Rule Engine — Expert-defined risk signals for known fraud patterns
+- Graph Detection — Network analysis for coordinated behavior rings (NetworkX)
+- Multi-Signal Fusion — Weighted combination (ML 50%, Rule 30%, Graph 20%)
 
-**Monitoring**
-- PSI-based model drift detection
-- Feature distribution monitoring
-- Baseline validation
-- Performance metrics tracking
+**Risk Event Management**
+- Risk event generation with complete audit trail
+- Signal attribution (which detection methods contributed to each score)
+- Evidence factors with feature-level explanations
+- Risk level classification with coordinated fraud override logic
+- Investigation queue with filtering by risk level
 
-**Visualization**
-- Risk command center dashboard
-- Investigation queue with filtering
-- Model monitoring interface
-- PSI drift visualization
+**Model Monitoring & Validation**
+- PSI-based drift detection for population stability monitoring
+- Feature distribution tracking vs training baseline
+- Performance metrics (AUC, KS) visualization
+- Model retraining workflow with baseline validation
 
-### 🚧 Future Enhancements
+**Visualization & Investigation**
+- Risk Command Center dashboard with executive summary
+- Model monitoring interface with PSI visualization
+- Investigation workspace with evidence attribution
+- Network relationship graph for entity analysis
 
-**Enterprise Data Integration**
-- Database connectors for operational systems
-- Data warehouse integration
-- Streaming data pipeline support
-- Real-time event processing
+### Architecture Boundaries
 
-**Case Management**
-- Case lifecycle workflow (creation → assignment → investigation → resolution)
-- Integration with external case management systems
-- Collaborative investigation tools
-- Audit trail for case actions
+The MVP uses CSV-based dataset upload as a demonstration proxy for production data integration. The underlying architecture is designed to extend to enterprise data sources (databases, data warehouses, streaming pipelines).
 
-**Advanced Features**
-- Automated retraining based on PSI thresholds
-- Real-time alerting and notifications
-- Advanced graph analytics with temporal patterns
+### Explicitly Excluded
+
+The following are **intentionally excluded** as platform infrastructure rather than core risk intelligence capabilities:
+
+- **Authentication & Authorization** — User identity, SSO, OAuth integration
+- **User Management** — Account creation, profile management, password handling
+- **Role-Based Access Control (RBAC)** — Permission management, role assignment
+- **Audit Logging for User Actions** — Operator activity tracking (separate from risk event audit trail)
+
+These capabilities are typically provided by enterprise identity providers (Okta, Auth0, Azure AD) and would be integrated at the platform level in production. The MVP focuses on risk intelligence functionality independent of these infrastructure concerns.
+
+---
+
+## Future Extensions
+
+The platform architecture supports several evolution paths for production deployment.
+
+### Enterprise Data Integration
+
+**Database & Warehouse Connectors**
+- Direct integration with operational databases (PostgreSQL, MySQL, MongoDB)
+- Data warehouse connectivity (Snowflake, BigQuery, Redshift)
+- Data lake integration (S3, ADLS, HDFS)
+
+**Streaming Pipeline Support**
+- Real-time event processing (Kafka, Kinesis, Pub/Sub)
+- Streaming feature computation
+- Low-latency risk scoring for transaction-time decisions
+
+### Case Management Workflow
+
+**Complete Case Lifecycle**
+- Structured workflow: creation → assignment → investigation → resolution
+- Case status transitions with validation rules
+- Collaborative investigation tools and notes
+- Resolution tracking and closure workflows
+
+**External System Integration**
+- API-based connection to existing case management platforms
+- Bi-directional sync for case status and outcomes
+- Historical performance feedback to model training
+
+### Operational Automation
+
+**Automated Retraining**
+- PSI-triggered retraining workflows
+- A/B testing framework for model comparison
+- Gradual rollout and shadow mode evaluation
+
+**Alerting & Notifications**
+- Real-time alert generation for critical risk events
+- Integration with notification systems (Slack, PagerDuty, email)
+- Escalation workflows based on risk severity
+
+### Advanced Model Capabilities
+
+**Temporal Graph Analysis**
+- Time-patterned relationship detection
+- Evolution of network clusters over time
+- Sequence-based fraud pattern recognition
+
+**Optional LLM-Assisted Investigation**
+- Natural language case summaries
+- Analyst workflow assistance and guidance
+- Investigation prioritization recommendations
+
+Current implementation includes an optional LLM integration endpoint that can be enabled for narrative explanation generation without affecting core risk scoring functionality.
 
 ---
 
@@ -521,4 +577,4 @@ The purpose is to demonstrate technical capability in a realistic but privacy-sa
 
 ## License
 
-This is a demonstration portfolio project.
+This is an open-source project released for educational and demonstration purposes.

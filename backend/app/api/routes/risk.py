@@ -625,7 +625,9 @@ async def get_user_graph(
 
 @router.post("/explain", response_model=ExplanationResponse)
 async def generate_explanation(
-    request: ExplanationRequest,
+    payload: ExplanationRequest,
+    request: Request,  # Inject actual HTTP Request for headers/client IP (must come before query params with defaults)
+    audience: str = Query("investigator", description="Audience mode: 'investigator' (default, full detail) or 'business' (reduced sensitive detail)"),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -659,7 +661,54 @@ async def generate_explanation(
 
     # Get graph data
     graph_service = GraphAnalysisService(db)
-    graph_data = await graph_service.get_user_graph(request.user_id, depth=1)
+    graph_data = await graph_service.get_user_graph(payload.user_id, depth=1)
+
+    # Build query string for policy search from risk event fields
+    query_parts = []
+    if risk_event.primary_reason:
+        query_parts.append(risk_event.primary_reason)
+    if risk_event.risk_level:
+        query_parts.append(risk_event.risk_level.lower())
+    if risk_event.recommended_action:
+        query_parts.append(risk_event.recommended_action)
+    # Add top factor names
+    for factor in factors[:3]:
+        if factor.factor_name:
+            query_parts.append(factor.factor_name.lower().replace("_", " "))
+
+    # Default query if no specific data available
+    query = " ".join(query_parts) if query_parts else "high risk investigation recommended actions manual review velocity amount anomaly location mismatch"
+
+    # Search policies via RAG (safe, never throws)
+    citations: List[PolicyCitation] = []
+    try:
+        rag = PolicyRAGService()
+        chunks = rag.search(query, top_k=5)
+
+        # Apply audience-based quote redaction
+        for i, ch in enumerate(chunks):
+            if audience == "business":
+                # Business mode: redact quote entirely
+                sanitized_quote = "[REDACTED]"
+            else:
+                # Investigator mode: apply sanitization with sensitive pattern redaction
+                sanitized_quote = sanitize_policy_quote(ch.text[:400].strip())
+
+            citations.append(
+                PolicyCitation(
+                    id=i + 1,
+                    doc=ch.doc,
+                    section=ch.section,
+                    quote=sanitized_quote,
+                    chunk_id=ch.chunk_id,
+                )
+            )
+    except Exception:
+        # RAG failure: continue with empty citations
+        citations = []
+
+    # Generate citation marks for inline text
+    citation_marks = "".join([f"[{c.id}]" for c in citations[:2]])
 
     # Generate explanation
     # Default behavior: model-based explanation (no LLM dependency)
@@ -667,17 +716,17 @@ async def generate_explanation(
         # LLM-enabled: Use LLM service for natural language summaries
         llm_service = LLMExplanationService()
         explanation = await llm_service.generate_explanation(
-            user_id=request.user_id,
-            risk_event=RiskEventResponse.model_validate(risk_event).model_dump(),
-            risk_factors=[f.model_dump() for f in factors],
-            graph_data=graph_data.model_dump(),
+            user_id=payload.user_id,
+            risk_event=_safe_dump(RiskEventResponse.model_validate(risk_event)),
+            risk_factors=[_safe_dump(f) for f in factors],
+            graph_data=_safe_dump(graph_data),
         )
     else:
         # Default: Generate model-based explanation from risk outputs
         explanation = _generate_model_based_explanation(
-            risk_event=RiskEventResponse.model_validate(risk_event).model_dump(),
-            factors=[f.model_dump() for f in factors],
-            graph_data=graph_data.model_dump(),
+            risk_event=_safe_dump(RiskEventResponse.model_validate(risk_event)),
+            factors=[_safe_dump(f) for f in factors],
+            graph_data=_safe_dump(graph_data),
         )
 
     return ExplanationResponse(**explanation)

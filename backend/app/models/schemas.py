@@ -367,11 +367,23 @@ class ExplanationRequest(BaseModel):
     user_id: str
 
 
+class PolicyCitation(BaseModel):
+    """Schema for policy citation."""
+    id: int
+    doc: str
+    section: str
+    quote: str
+    chunk_id: str
+
+
 class ExplanationResponse(BaseModel):
     """Schema for LLM explanation response."""
     summary: str
     key_findings: List[str] = []
     recommended_action: str
+    citations: List[PolicyCitation] = []
+    explanation_source: str = "MODEL_FALLBACK"  # "LLM" or "MODEL_FALLBACK"
+    llm_error: Optional[str] = None  # Short error message for LLM failures (not shown to users by default)
 
 
 # ============================================================

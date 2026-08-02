@@ -40,6 +40,25 @@ class Settings(BaseSettings):
     LLM_MODEL: str = "claude-3-5-sonnet-20241022"
     LLM_MAX_TOKENS: int = 2000
     LLM_TEMPERATURE: float = 0.3
+    # SHOW_USER_ID_IN_LLM_PROMPT: Control whether user_id is sent to LLM
+    # Default: false - user_id is redacted for privacy
+    # When true: user_id is included in LLM prompt (use with caution)
+    SHOW_USER_ID_IN_LLM_PROMPT: bool = False
+    # LOG_REDACT_USER_ID: Control whether user_id is redacted in structured logs
+    # Default: true - user_id is redacted in logs for privacy
+    # When false: actual user_id is logged (use with caution for debugging)
+    # This is separate from SHOW_USER_ID_IN_LLM_PROMPT - logs can be more restrictive
+    LOG_REDACT_USER_ID: bool = True
+
+    # Explanation Cache & Rate Limiting
+    # EXPLAIN_CACHE_TTL_SECONDS: Time-to-live for explanation cache (default: 600 seconds = 10 minutes)
+    EXPLAIN_CACHE_TTL_SECONDS: int = 600
+    # EXPLAIN_CACHE_MAX_SIZE: Maximum number of cached entries (default: 1024)
+    EXPLAIN_CACHE_MAX_SIZE: int = 1024
+    # EXPLAIN_RATE_LIMIT_PER_MIN: Rate limit per client IP per minute (default: 30)
+    EXPLAIN_RATE_LIMIT_PER_MIN: int = 30
+    # EXPLAIN_LLM_TIMEOUT_SECONDS: Timeout for LLM API calls (default: 5 seconds)
+    EXPLAIN_LLM_TIMEOUT_SECONDS: int = 5
 
     # Risk Scoring Weights
     ML_WEIGHT: float = 0.5

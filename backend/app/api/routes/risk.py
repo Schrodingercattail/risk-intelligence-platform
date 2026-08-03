@@ -3,14 +3,20 @@ Risk Command Center API Routes
 
 Main API for risk event management and investigation.
 """
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Optional
+from typing import Optional, List
+import time
+import hashlib
+from pathlib import Path
+from collections import OrderedDict
 
 from app.db.session import get_db
 from app.services.risk_service import RiskScoringService
 from app.services.graph_service import GraphAnalysisService
-from app.services.llm_service import LLMExplanationService
+from app.services.llm_service import LLMExplanationService, sanitize_policy_quote
+from app.services.policy_rag_service import PolicyRAGService
+from app.services.explain_metrics import get_explain_metrics as _get_explain_metrics, log_explain_request
 from app.models.database import RiskEvent, User, RiskLevel, Case, CaseStatus
 from app.models.schemas import (
     RiskOverviewResponse,
@@ -23,11 +29,195 @@ from app.models.schemas import (
     ExplanationResponse,
     ClusterInfo,
     RiskEvidenceResponse,
+    PolicyCitation,
 )
 from sqlalchemy import select, func, desc, text
 from app.config import settings
+import logging
 
 router = APIRouter(prefix="/risk", tags=["Risk"])
+logger = logging.getLogger(__name__)
+
+
+def _safe_increment_metrics(metrics, method_name: str) -> None:
+    """
+    Safely call a metrics increment method without breaking the flow.
+
+    Args:
+        metrics: The ExplainMetrics instance
+        method_name: Name of the method to call (e.g., 'increment_requests')
+    """
+    try:
+        getattr(metrics, method_name)()
+    except Exception as e:
+        logger.warning(f"Failed to track metrics ({method_name}): {e}")
+
+
+def _safe_record_latency(metrics, latency_ms: float) -> None:
+    """
+    Safely record latency without breaking the flow.
+
+    Args:
+        metrics: The ExplainMetrics instance
+        latency_ms: Latency in milliseconds
+    """
+    try:
+        metrics.record_latency(latency_ms)
+    except Exception as e:
+        logger.warning(f"Failed to record latency: {e}")
+
+
+# ============================================================
+# In-Memory Cache for Explanation Results
+# ============================================================
+
+class ExplanationCache:
+    """Simple in-memory TTL cache for explanation results."""
+
+    def __init__(self, max_size: int = 1024, ttl_seconds: int = 600):
+        self.cache: OrderedDict[str, tuple] = OrderedDict()
+        self.max_size = max_size
+        self.ttl_seconds = ttl_seconds
+        self.metrics = _get_explain_metrics()  # Get metrics instance
+
+    def get(self, key: str) -> Optional[dict]:
+        """Get cached entry if not expired. Tracks cache hit/miss metrics."""
+        if key not in self.cache:
+            # Cache miss (key not found)
+            _safe_increment_metrics(self.metrics, "increment_cache_miss")
+            return None
+
+        timestamp, value = self.cache[key]
+        if time.time() - timestamp > self.ttl_seconds:
+            # Cache miss (expired)
+            del self.cache[key]
+            _safe_increment_metrics(self.metrics, "increment_cache_miss")
+            return None
+
+        # Cache hit
+        _safe_increment_metrics(self.metrics, "increment_cache_hit")
+        # Move to end (LRU)
+        self.cache.move_to_end(key)
+        return value
+
+    def set(self, key: str, value: dict) -> None:
+        """Set cache entry with current timestamp."""
+        # Evict oldest if at capacity
+        if len(self.cache) >= self.max_size and key not in self.cache:
+            self.cache.popitem(last=False)
+
+        self.cache[key] = (time.time(), value)
+        self.cache.move_to_end(key)
+
+
+# Global cache instance
+_explanation_cache = ExplanationCache(
+    max_size=settings.EXPLAIN_CACHE_MAX_SIZE,
+    ttl_seconds=settings.EXPLAIN_CACHE_TTL_SECONDS
+)
+
+
+# ============================================================
+# Simple In-Memory Rate Limiter
+# ============================================================
+
+class RateLimiter:
+    """Simple in-memory rate limiter using sliding window."""
+
+    def __init__(self, requests_per_minute: int = 30):
+        self.requests_per_minute = requests_per_minute
+        # Track requests: {ip: [(timestamp, ...)]}
+        self.requests: dict[str, list[tuple]] = {}
+        self.metrics = _get_explain_metrics()  # Get metrics instance
+
+    def is_allowed(self, client_id: str) -> tuple[bool, Optional[str]]:
+        """Check if request is allowed. Returns (allowed, error_message)."""
+        now = time.time()
+        window_start = now - 60  # 1 minute window
+
+        # Clean old entries
+        if client_id in self.requests:
+            # Remove requests outside the window
+            self.requests[client_id] = [
+                (ts, _) for (ts, _) in self.requests[client_id]
+                if ts > window_start
+            ]
+
+        # Get current count
+        if client_id not in self.requests:
+            self.requests[client_id] = []
+        current_count = len(self.requests[client_id])
+
+        if current_count >= self.requests_per_minute:
+            # Rate limit exceeded - track this
+            _safe_increment_metrics(self.metrics, "increment_rate_limited")
+            return False, f"Rate limit exceeded: {self.requests_per_minute} requests per minute"
+
+        # Add this request
+        self.requests[client_id].append((now, None))
+        return True, None
+
+
+# Global rate limiter instance
+_rate_limiter = RateLimiter(requests_per_minute=settings.EXPLAIN_RATE_LIMIT_PER_MIN)
+
+
+def _get_policy_version() -> str:
+    """Derive policy version from latest mtime of policy files."""
+    try:
+        policies_dir = Path(__file__).resolve().parents[3] / "policies"
+        if not policies_dir.exists():
+            return "no-policies"
+
+        # Get latest mtime of any .md file
+        latest_mtime = 0
+        for p in policies_dir.glob("*.md"):
+            mtime = p.stat().st_mtime
+            if mtime > latest_mtime:
+                latest_mtime = mtime
+
+        return str(int(latest_mtime)) if latest_mtime > 0 else "empty-policies"
+    except Exception:
+        return "unknown"
+
+
+def _generate_cache_key(user_id: str, audience: str, risk_event: dict) -> str:
+    """Generate cache key from relevant fields."""
+    # Use key identifiers that affect explanation output
+    key_parts = [
+        user_id,
+        audience,
+        str(risk_event.get('pipeline_run_id', 'no-run')),
+        str(risk_event.get('model_version', 'no-model')),
+        _get_policy_version(),
+    ]
+    key_string = "|".join(key_parts)
+    return hashlib.sha256(key_string.encode()).hexdigest()
+
+
+def _safe_dump(obj):
+    """
+    Safely serialize an object to dict, handling various object types.
+
+    Handles:
+    - None: returns None
+    - dict: returns as-is
+    - Pydantic v2 models (model_dump method)
+    - Pydantic v1 models (dict method)
+    - Other objects: returns as-is
+
+    This ensures robustness when the data source returns different types.
+    """
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return obj
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump()
+    elif hasattr(obj, "dict"):
+        return obj.dict()
+    else:
+        return obj
 
 
 def _generate_model_based_explanation(
@@ -636,20 +826,105 @@ async def generate_explanation(
     Behavior:
     - Default: Returns model-based explanation from risk analysis outputs
     - Optional (ENABLE_LLM_EXPLANATION=true): Uses LLM for natural language summaries
+    - audience parameter controls output granularity:
+      - investigator: Full citations with redacted quotes, detailed key_findings
+      - business: Redacted quotes, reduced sensitive phrasing in key_findings
+    - Results are cached (TTL=600s) to reduce repeated computation
+    - Rate limited to 30 requests/minute per client IP
 
     The platform operates fully without LLM integration.
+    NOTE: This is a demo audience-based output mode; production should enforce RBAC via gateway/SSO.
     """
+    # Get metrics instance and start timing
+    metrics = _get_explain_metrics()
+    start_time = time.time()
+
+    # Get client IP for rate limiting (from actual HTTP Request)
+    # Prefer x-forwarded-for (take first IP if multiple)
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        client_ip = forwarded_for.split(",")[0].strip()
+    else:
+        client_ip = request.headers.get("x-real-ip", request.client.host or "unknown")
+
+    if client_ip == "unknown":
+        # Fallback to user_id if client IP cannot be determined
+        client_ip = f"user:{payload.user_id}"
+
+    # Check rate limit
+    allowed, rate_error = _rate_limiter.is_allowed(client_ip)
+    if not allowed:
+        # Rate limit exceeded - metrics already tracked by RateLimiter
+        _safe_increment_metrics(metrics, "increment_requests")
+        _safe_increment_metrics(metrics, "increment_rate_limited")
+
+        latency_ms = (time.time() - start_time) * 1000
+        _safe_record_latency(metrics, latency_ms)
+
+        log_explain_request(
+            status_code=429,
+            latency_ms=latency_ms,
+            cache_hit=False,
+            rate_limited=True,
+            fallback_used=False,
+            explanation_source=None,
+            citations_count=0,
+            audience=audience,
+            user_id=payload.user_id,
+        )
+        raise HTTPException(status_code=429, detail=rate_error)
+
+    # Track request start
+    _safe_increment_metrics(metrics, "increment_requests")
+
     # Get risk event
     result = await db.execute(
         select(RiskEvent)
-        .where(RiskEvent.user_id == request.user_id)
+        .where(RiskEvent.user_id == payload.user_id)
         .order_by(desc(RiskEvent.detected_at))
         .limit(1)
     )
     risk_event = result.scalar_one_or_none()
 
     if not risk_event:
-        raise HTTPException(status_code=404, detail=f"Risk event not found for user {request.user_id}")
+        _safe_increment_metrics(metrics, "increment_error")
+        latency_ms = (time.time() - start_time) * 1000
+        _safe_record_latency(metrics, latency_ms)
+
+        log_explain_request(
+            status_code=404,
+            latency_ms=latency_ms,
+            cache_hit=False,
+            rate_limited=False,
+            fallback_used=False,
+            explanation_source=None,
+            citations_count=0,
+            audience=audience,
+            user_id=payload.user_id,
+        )
+        raise HTTPException(status_code=404, detail=f"Risk event not found for user {payload.user_id}")
+
+    # Check cache (before any expensive computation)
+    cache_key = _generate_cache_key(payload.user_id, audience, _safe_dump(RiskEventResponse.model_validate(risk_event).model_dump()))
+    cached_response = _explanation_cache.get(cache_key)
+    if cached_response is not None:
+        # Cache hit - metrics already tracked by cache.get()
+        latency_ms = (time.time() - start_time) * 1000
+        _safe_record_latency(metrics, latency_ms)
+        _safe_increment_metrics(metrics, "increment_success")
+
+        log_explain_request(
+            status_code=200,
+            latency_ms=latency_ms,
+            cache_hit=True,
+            rate_limited=False,
+            fallback_used=False,
+            explanation_source=cached_response.get("explanation_source"),
+            citations_count=len(cached_response.get("citations", [])),
+            audience=audience,
+            user_id=payload.user_id,
+        )
+        return ExplanationResponse(**cached_response)
 
     # Get risk factors
     from app.models.database import RiskFactor
@@ -729,6 +1004,107 @@ async def generate_explanation(
             graph_data=_safe_dump(graph_data),
         )
 
+    # Append citation marks to explanation text fields if citations exist
+    if citation_marks:
+        # Append to summary
+        if isinstance(explanation.get("summary"), str):
+            explanation["summary"] = explanation["summary"].rstrip() + " " + citation_marks
+
+        # Append to key_findings items
+        if isinstance(explanation.get("key_findings"), list):
+            key_findings = explanation["key_findings"]
+            for i, item in enumerate(key_findings):
+                if isinstance(item, str):
+                    key_findings[i] = item.rstrip() + " " + citation_marks
+                elif isinstance(item, dict):
+                    # Handle dict items with text fields
+                    for text_field in ("text", "title", "description"):
+                        if text_field in item and isinstance(item[text_field], str):
+                            item[text_field] = item[text_field].rstrip() + " " + citation_marks
+
+    # Apply audience-based output shaping for key_findings
+    if audience == "business" and isinstance(explanation.get("key_findings"), list):
+        key_findings = explanation["key_findings"]
+        for i, item in enumerate(key_findings):
+            if isinstance(item, str):
+                # Reduce sensitive phrasing for business audience
+                sanitized_item = item
+                # Replace phrases with more generic alternatives
+                replacements = [
+                    ("shared devices", "shared access signals"),
+                    ("shared IPs", "shared access signals"),
+                    ("shared device", "shared access signal"),
+                    ("shared IP", "shared access signal"),
+                    ("connected to ", "related to "),
+                    # Replace network size numbers
+                    (r"connected to \d+ other account", "connected to multiple related accounts"),
+                    (r"connected to \d+ additional account", "connected to multiple related accounts"),
+                ]
+                for old, new in replacements:
+                    if isinstance(new, str):
+                        sanitized_item = sanitized_item.replace(old, new)
+                    else:  # regex pattern
+                        import re
+                        sanitized_item = re.sub(new[0], new[1], sanitized_item)
+                key_findings[i] = sanitized_item
+            elif isinstance(item, dict):
+                # Handle dict items
+                for text_field in ("text", "title", "description"):
+                    if text_field in item and isinstance(item[text_field], str):
+                        sanitized_text = item[text_field]
+                        replacements = [
+                            ("shared devices", "shared access signals"),
+                            ("shared IPs", "shared access signals"),
+                            ("shared device", "shared access signal"),
+                            ("shared IP", "shared access signal"),
+                            ("connected to ", "related to "),
+                        ]
+                        for old, new in replacements:
+                            sanitized_text = sanitized_text.replace(old, new)
+                        item[text_field] = sanitized_text
+
+    # Add citations to response
+    explanation["citations"] = citations
+
+    # Store in cache for future requests
+    _explanation_cache.set(cache_key, explanation)
+
+    # Track completion metrics
+    latency_ms = (time.time() - start_time) * 1000
+    _safe_record_latency(metrics, latency_ms)
+    _safe_increment_metrics(metrics, "increment_success")
+
+    # Track explanation source metrics
+    # Distinguish between: LLM disabled, LLM failed, LLM success
+    explanation_source = explanation.get("explanation_source", "MODEL_FALLBACK")
+    llm_was_enabled = settings.ENABLE_LLM_EXPLANATION and settings.ANTHROPIC_API_KEY
+
+    if llm_was_enabled:
+        if explanation_source == "LLM":
+            # LLM was enabled and succeeded
+            _safe_increment_metrics(metrics, "increment_llm")
+        else:
+            # LLM was enabled but failed/timeout (explanation_source = MODEL_FALLBACK)
+            _safe_increment_metrics(metrics, "increment_llm_failed")
+    else:
+        # LLM was disabled or no API key (model-based by default)
+        _safe_increment_metrics(metrics, "increment_llm_disabled")
+
+    # Log structured JSON
+    # fallback_used is true if explanation came from model-based (either disabled or failed)
+    fallback_used = (explanation_source == "MODEL_FALLBACK")
+    log_explain_request(
+        status_code=200,
+        latency_ms=latency_ms,
+        cache_hit=False,
+        rate_limited=False,
+        fallback_used=fallback_used,
+        explanation_source=explanation_source,
+        citations_count=len(citations),
+        audience=audience,
+        user_id=payload.user_id,
+    )
+
     return ExplanationResponse(**explanation)
 
 
@@ -794,3 +1170,23 @@ async def get_network_signals(
         return {"connected_account_count": 0, "connected_accounts": []}
 
     return signals
+
+
+# ============================================================
+# Metrics Endpoint for /api/risk/explain
+# ============================================================
+
+@router.get("/metrics/explain")
+async def explain_metrics():
+    """
+    Get metrics for the /api/risk/explain endpoint.
+
+    Returns:
+        Dict with:
+        - Request counters: requests_total, success_total, error_total, rate_limited_total
+        - Cache metrics: cache_hit_rate (computed), cache_hit_total, cache_miss_total
+        - Fallback metrics: fallback_rate (computed), fallback_total, llm_total
+        - Latency metrics: latency_ms_p50, latency_ms_p95, latency_ms_avg
+    """
+    metrics = _get_explain_metrics()
+    return metrics.get_metrics()

@@ -87,6 +87,104 @@ python tools/qa_suggest_scores.py \
 
 ---
 
+## Evaluation Artifacts (v1.1.0)
+
+### Core Artifacts
+
+| Artifact | Description |
+|----------|-------------|
+| `explain_eval_cases.csv` | Generated evaluation cases with user IDs and risk levels |
+| `explain_eval_results.csv` | Human-annotated scoring results with dimension scores and failure codes |
+| `explain_eval_summary.md` | Aggregated evaluation report with quality analysis and action plan |
+| `explain_eval_rubric.md` | Scoring criteria for accuracy, readability, actionability, and citation quality |
+| `explain_failure_taxonomy.md` | Failure code definitions categorized by accuracy, readability, actionability, citations, and privacy |
+
+### Excluded Artifacts
+
+| Directory | Contents | Status |
+|-----------|----------|--------|
+| `raw_explanations/` | Case-level raw JSON outputs from `/api/risk/explain` | Excluded from git |
+
+**Note:** The `raw_explanations/` directory contains generated case-level outputs and is intentionally excluded from the repository. To regenerate:
+```bash
+python tools/export_explain_eval_set.py --base-url http://localhost:8000 --count 20
+```
+
+### Official Benchmark
+
+**Human evaluation is the official benchmark** for explainability quality. The `explain_eval_results.csv` and `explain_eval_summary.md` represent the authoritative evaluation results.
+
+Automated QA experiments (e.g., `qa_suggestions.csv` from `tools/qa_suggest_scores.py`) are **not** used as final evaluation results. They serve only as experimental reference points for potential automated quality checks.
+
+---
+
+## Evaluation Results (v1.1.0)
+
+### Overview
+
+The v1.1.0 release includes a completed manual evaluation of the `/api/risk/explain` endpoint. Twenty explanation cases were evaluated across five dimensions by human raters.
+
+### Evaluation Dimensions
+
+| Dimension | Purpose |
+|-----------|---------|
+| **Accuracy & Groundedness** | Are claims grounded in actual risk data? Are scores correct? |
+| **Readability** | Is the explanation clear, professional, and logically structured? |
+| **Actionability** | Does it provide clear, appropriate next steps for investigators? |
+| **Citation Quality** | Are policy citations relevant to the actual risk evidence? |
+| **Sensitivity & Privacy** | Does the explanation leak sensitive data? |
+
+### Results Summary
+
+| Dimension | Average Score | Pass Rate |
+|-----------|---------------|-----------|
+| Accuracy & Groundedness | 4.0 / 5.0 | 100% |
+| Readability | 4.0 / 5.0 | 100% |
+| Actionability | 3.3 / 5.0 | 100% |
+| Citation Quality | 2.1 / 5.0 | 100% |
+| Sensitivity & Privacy | — | 100% |
+
+**Overall Quality Distribution:**
+- Excellent: 1 case (5%)
+- Good: 19 cases (95%)
+- Fair: 0 cases (0%)
+- Poor: 0 cases (0%)
+
+### Key Findings
+
+**Strengths:**
+- The system produces grounded explanations with perfect consistency across all cases
+- All claims are supported by actual risk event data
+- Privacy protection works correctly — no sensitive data leakage detected
+- Schema compliance and response structure validation pass consistently
+
+**Improvement Area:**
+- Evidence-to-policy citation alignment is the primary limitation
+- 95% of cases contained citation quality issues (irrelevant or excessive citations)
+- Citations often reference policies without supporting evidence in the case
+
+### Artifacts
+
+| File | Description |
+|------|-------------|
+| `eval/explain_eval_results.csv` | Human evaluation records with dimension scores and failure codes |
+| `eval/explain_eval_summary.md` | Aggregated evaluation report with quality analysis and action plan |
+| `eval/explain_eval_rubric.md` | Detailed scoring criteria and evaluation definitions |
+| `eval/explain_failure_taxonomy.md` | Failure code taxonomy categorized by dimension |
+
+### QA Tools
+
+**tools/qa_suggest_scores.py**
+
+A heuristic QA assistance tool that identifies potential quality issues for reviewer attention. It uses rule-based checks to flag:
+- Missing or inconsistent fields
+- Suspicious score patterns
+- Potential citation issues
+
+**Important:** This tool does **not** replace human evaluation. It serves as an assistant to highlight potential issues for manual review. The final evaluation scores in `explain_eval_results.csv` are entirely from human evaluators.
+
+---
+
 ## Evaluation Process Details
 
 ### Scoring Dimensions (1-5)

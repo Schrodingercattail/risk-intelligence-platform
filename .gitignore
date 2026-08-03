@@ -58,8 +58,8 @@ yarn-error.log*
 data/generated/*.csv
 
 # Explain evaluation artifacts
-eval/explain_eval_results.csv
 eval/raw_explanations/
+eval/qa_suggestions.csv
 # Docker
 docker-compose.override.yml
 

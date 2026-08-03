@@ -248,10 +248,21 @@ export interface GraphData {
   edges: GraphEdge[];
 }
 
+export interface PolicyCitation {
+  id: number;
+  doc: string;
+  section: string;
+  quote: string;
+  chunk_id: string;
+}
+
 export interface Explanation {
   summary: string;
   key_findings: string[];
   recommended_action: string;
+  citations: PolicyCitation[];
+  explanation_source: 'LLM' | 'MODEL_FALLBACK';
+  llm_error?: string;
 }
 
 export interface PipelineStatus {

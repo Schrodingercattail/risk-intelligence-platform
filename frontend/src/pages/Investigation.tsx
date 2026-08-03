@@ -8,7 +8,7 @@
  * NOT a Case Management System - no workflow or status tracking.
  */
 import { useState, useMemo, useEffect } from 'react';
-import { riskApi } from '../services/api';
+import { riskApi, PolicyCitation, Explanation } from '../services/api';
 
 // Simple tooltip component
 function Tooltip({ content, children }: { content: string; children: React.ReactNode }) {
@@ -22,6 +22,144 @@ function Tooltip({ content, children }: { content: string; children: React.React
       </div>
     </div>
   );
+}
+
+// Citation Modal Component
+function CitationModal({ citation, onClose }: { citation: PolicyCitation | null; onClose: () => void }) {
+  if (!citation) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={onClose}>
+      <div
+        className="bg-white rounded-lg shadow-xl max-w-lg w-full mx-4 max-h-[80vh] overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="p-4 border-b border-slate-200 flex justify-between items-start">
+          <div className="flex-1">
+            <h3 className="text-lg font-semibold text-slate-900">Policy Citation [{citation.id}]</h3>
+            <p className="text-sm text-slate-600 mt-1">Source: {citation.doc}</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="text-slate-400 hover:text-slate-600 text-2xl leading-none"
+          >
+            ×
+          </button>
+        </div>
+        <div className="p-4 overflow-y-auto max-h-[60vh]">
+          <div className="mb-4">
+            <h4 className="text-sm font-semibold text-slate-700 mb-1">Section</h4>
+            <p className="text-sm text-slate-900 bg-slate-50 px-3 py-2 rounded">{citation.section}</p>
+          </div>
+          <div className="mb-4">
+            <h4 className="text-sm font-semibold text-slate-700 mb-1">Quote</h4>
+            <p className="text-sm text-slate-900 bg-slate-50 px-3 py-2 rounded whitespace-pre-wrap">{citation.quote}</p>
+          </div>
+          <div>
+            <h4 className="text-sm font-semibold text-slate-700 mb-1">Reference ID</h4>
+            <p className="text-xs text-slate-500 font-mono bg-slate-50 px-3 py-2 rounded">{citation.chunk_id}</p>
+          </div>
+        </div>
+        <div className="p-4 border-t border-slate-200 bg-slate-50">
+          <button
+            onClick={onClose}
+            className="w-full py-2 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Helper to render text with clickable citations
+function renderTextWithCitations(
+  text: string,
+  citations: PolicyCitation[],
+  onCitationClick: (citation: PolicyCitation) => void
+) {
+  if (!citations || citations.length === 0) {
+    return <span>{text}</span>;
+  }
+
+  // Split text by citation patterns like [1], [2], etc.
+  const parts = text.split(/(\[\d+\])/g);
+
+  return (
+    <>
+      {parts.map((part, idx) => {
+        const match = part.match(/\[(\d+)\]/);
+        if (match) {
+          const citationId = parseInt(match[1], 10);
+          const citation = citations.find((c) => c.id === citationId);
+          if (citation) {
+            return (
+              <button
+                key={idx}
+                onClick={() => onCitationClick(citation)}
+                className="inline-flex items-center text-blue-600 hover:text-blue-800 underline cursor-pointer text-xs font-medium"
+              >
+                [{citationId}]
+              </button>
+            );
+          }
+        }
+        return <span key={idx}>{part}</span>;
+      })}
+    </>
+  );
+}
+
+// Check if a finding is score-related (for filtering in Policy-backed Narrative)
+function isScoreRelatedFinding(finding: string): boolean {
+  const scoreKeywords = ['score', 'signal', 'ml ', 'rule ', 'graph ', 'probability', 'threshold'];
+  const lowerFinding = finding.toLowerCase();
+  return scoreKeywords.some(keyword => lowerFinding.includes(keyword));
+}
+
+// Filter findings to prioritize non-score content for Policy-backed Narrative
+function filterKeyFindings(findings: string[]): { nonScoreFindings: string[]; scoreFindings: string[] } {
+  const nonScoreFindings: string[] = [];
+  const scoreFindings: string[] = [];
+
+  findings.forEach(finding => {
+    if (isScoreRelatedFinding(finding)) {
+      scoreFindings.push(finding);
+    } else {
+      nonScoreFindings.push(finding);
+    }
+  });
+
+  return { nonScoreFindings, scoreFindings };
+}
+
+// Generate missing info list from KYC/CDD policy citations
+function generateMissingInfo(citations: PolicyCitation[]): string[] {
+  const kycCitations = citations.filter(c => c.doc.includes('KYC') || c.doc.includes('CDD'));
+
+  if (kycCitations.length > 0) {
+    // Extract relevant missing info from KYC citations
+    const missingItems: string[] = [];
+    const seen = new Set<string>();
+
+    kycCitations.forEach(citation => {
+      const quoteLower = citation.quote.toLowerCase();
+      const relevantTerms = ['account age', 'onboarding', 'volume', 'device', 'ip', 'kyc', 'due diligence'];
+
+      relevantTerms.forEach(term => {
+        if (quoteLower.includes(term) && !seen.has(term)) {
+          seen.add(term);
+          missingItems.push(term.charAt(0).toUpperCase() + term.slice(1));
+        }
+      });
+    });
+
+    return missingItems.length > 0 ? missingItems : ['Account context', 'Trading pattern history'];
+  }
+
+  // Default template if no KYC citations found
+  return ['Account age/onboarding date', 'Expected volume range', 'Device/IP history (template)'];
 }
 
 interface InvestigationCase {
@@ -119,6 +257,13 @@ export default function Investigation() {
   const [expandedNetworkAccounts, setExpandedNetworkAccounts] = useState<Set<string>>(new Set());
   const PAGE_SIZE = 50; // Load 50 cases at a time
 
+  // Explanation state
+  const [explanation, setExplanation] = useState<Explanation | null>(null);
+  const [loadingExplanation, setLoadingExplanation] = useState(false);
+  const [explanationError, setExplanationError] = useState<string | null>(null);
+  const [selectedCitation, setSelectedCitation] = useState<PolicyCitation | null>(null);
+  const [activeTab, setActiveTab] = useState<'evidence' | 'policy'>('evidence');
+
   // Load more transactions
   const loadMoreTransactions = () => {
     setDisplayedTransactionCount(prev => prev + 3);
@@ -149,6 +294,21 @@ export default function Investigation() {
       console.error('Failed to load case detail:', err);
       // Keep the original case if detail fetch fails
       setSelectedCase(caseItem);
+    }
+  };
+
+  // Fetch explanation for a selected case
+  const fetchExplanation = async (userId: string) => {
+    try {
+      setLoadingExplanation(true);
+      setExplanationError(null);
+      const explanationData = await riskApi.generateExplanation(userId);
+      setExplanation(explanationData);
+    } catch (err) {
+      console.error('Failed to load explanation:', err);
+      setExplanationError('Failed to load explanation. The case will still show other evidence.');
+    } finally {
+      setLoadingExplanation(false);
     }
   };
 
@@ -204,6 +364,7 @@ export default function Investigation() {
     fetchCaseDetail(caseItem); // Fetch details in background
     fetchCaseEvidence(caseItem.user_id); // Fetch evidence in background
     fetchNetworkSignals(caseItem.user_id, true); // Fetch network signals in background (initial load)
+    fetchExplanation(caseItem.user_id); // Fetch explanation in background
   };
 
   // Fetch cases from backend API
@@ -549,43 +710,216 @@ export default function Investigation() {
                 </div>
               </div>
 
-              {/* Model Explainability */}
+              {/* Case Explanation (Unified Card with Tabs) */}
               <div className="bg-white rounded-lg border border-slate-200 p-4">
-                <div className="flex items-center gap-2 mb-3">
-                  <h3 className="text-sm font-semibold text-slate-900">Model Explainability</h3>
-                  <span className="text-xs text-slate-500">
-                    Model-generated risk analysis and contributing factors
-                  </span>
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-900">Case Explanation</h3>
+                    <p className="text-xs text-slate-500 mt-1">
+                      Evidence-based explanation with optional policy-backed narrative (read-only).
+                    </p>
+                  </div>
+                  {/* Source Badge */}
+                  {explanation && activeTab === 'policy' && (
+                    <div className="flex items-center gap-2">
+                      <span className={`px-2 py-1 text-xs font-medium rounded ${
+                        explanation.explanation_source === 'LLM'
+                          ? 'bg-purple-100 text-purple-700 border border-purple-200'
+                          : 'bg-slate-100 text-slate-600 border border-slate-200'
+                      }`}>
+                        Source: {explanation.explanation_source === 'LLM' ? 'LLM' : 'Model (Fallback)'}
+                      </span>
+                      {explanation.llm_error && (
+                        <span className="text-amber-500" title={explanation.llm_error}>
+                          ⚠
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
 
-                {/* Summary */}
-                <div className="mb-4">
-                  <h4 className="text-xs font-semibold text-slate-700 mb-1">Risk Summary</h4>
-                  <p className="text-sm text-slate-600">{selectedCase.risk_explanation.summary}</p>
+                {/* Tab Control (Segmented Control) */}
+                <div className="flex gap-2 mb-4 bg-slate-100 p-1 rounded-lg">
+                  <button
+                    onClick={() => setActiveTab('evidence')}
+                    className={`flex-1 py-2 px-4 text-sm font-medium rounded-md transition-colors ${
+                      activeTab === 'evidence'
+                        ? 'bg-white text-slate-900 shadow-sm'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    Evidence (Model Explainability)
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('policy')}
+                    className={`flex-1 py-2 px-4 text-sm font-medium rounded-md transition-colors ${
+                      activeTab === 'policy'
+                        ? 'bg-white text-slate-900 shadow-sm'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    Policy-backed Narrative (Citations)
+                  </button>
                 </div>
 
-                {/* Contributing Factors */}
-                <div className="mb-4">
-                  <h4 className="text-xs font-semibold text-slate-700 mb-2">Key Contributing Factors</h4>
-                  <ul className="space-y-1">
-                    {selectedCase.risk_explanation.contributingFactors.map((factor, index) => (
-                      <li key={index} className="text-xs text-slate-600 flex items-start gap-2">
-                        <span className="text-blue-600 font-medium">{index + 1}.</span>
-                        <span>{factor}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
+                {/* Tab 1: Evidence (Model Explainability) */}
+                {activeTab === 'evidence' && (
+                  <div className="space-y-4">
+                    {/* Summary */}
+                    <div>
+                      <h4 className="text-xs font-semibold text-slate-700 mb-1">Risk Summary</h4>
+                      <p className="text-sm text-slate-600">{selectedCase.risk_explanation.summary}</p>
+                    </div>
 
-                {/* Analyst Guidance */}
-                <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-                  <h4 className="text-xs font-semibold text-blue-900 mb-1">Recommended Analyst Action</h4>
-                  <p className="text-xs text-blue-800">{selectedCase.risk_explanation.analyst_guidance}</p>
-                </div>
+                    {/* Contributing Factors */}
+                    <div>
+                      <h4 className="text-xs font-semibold text-slate-700 mb-2">Key Contributing Factors</h4>
+                      <ul className="space-y-1">
+                        {selectedCase.risk_explanation.contributingFactors.map((factor, index) => (
+                          <li key={index} className="text-xs text-slate-600 flex items-start gap-2">
+                            <span className="text-blue-600 font-medium">{index + 1}.</span>
+                            <span>{factor}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
 
-                <p className="text-xs text-slate-500 mt-3 italic">
-                  This explanation is generated by the risk analysis model to support analyst decision-making. The final determination and action are made by the reviewing analyst.
-                </p>
+                    {/* Analyst Guidance */}
+                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                      <h4 className="text-xs font-semibold text-blue-900 mb-1">Recommended Analyst Action</h4>
+                      <p className="text-xs text-blue-800">{selectedCase.risk_explanation.analyst_guidance}</p>
+                    </div>
+
+                    <p className="text-xs text-slate-500 italic">
+                      This explanation is generated by the risk analysis model to support analyst decision-making. The final determination and action are made by the reviewing analyst.
+                    </p>
+                  </div>
+                )}
+
+                {/* Tab 2: Policy-backed Narrative (Citations) */}
+                {activeTab === 'policy' && (
+                  <div className="space-y-4">
+                    {loadingExplanation ? (
+                      <div className="text-center py-6 text-slate-500 text-sm">
+                        Loading policy-backed narrative...
+                      </div>
+                    ) : explanationError ? (
+                      <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                        <p className="text-sm text-yellow-800">{explanationError}</p>
+                        <p className="text-xs text-yellow-700 mt-2">
+                          You can still view the Evidence tab for model-generated analysis.
+                        </p>
+                      </div>
+                    ) : explanation ? (
+                      <div className="space-y-4">
+                        {/* A. What this means (Policy-backed) */}
+                        <div>
+                          <h4 className="text-xs font-semibold text-slate-700 mb-2">What this means (Policy-backed)</h4>
+                          <p className="text-sm text-slate-600">
+                            {renderTextWithCitations(explanation.summary, explanation.citations, setSelectedCitation)}
+                          </p>
+                        </div>
+
+                        {/* B. Top risk hypotheses */}
+                        {explanation.key_findings && explanation.key_findings.length > 0 && (
+                          <div>
+                            <h4 className="text-xs font-semibold text-slate-700 mb-2">Top Risk Hypotheses</h4>
+                            <ul className="space-y-2">
+                              {(() => {
+                                const { nonScoreFindings, scoreFindings } = filterKeyFindings(explanation.key_findings);
+
+                                // Show non-score findings first
+                                const displayFindings = nonScoreFindings.length > 0
+                                  ? nonScoreFindings
+                                  : explanation.key_findings.slice(0, 2);
+
+                                return (
+                                  <>
+                                    {displayFindings.map((finding, index) => (
+                                      <li key={index} className="text-sm text-slate-600 flex items-start gap-2">
+                                        <span className="text-blue-600 font-medium flex-shrink-0">{index + 1}.</span>
+                                        <span className="flex-1">
+                                          {renderTextWithCitations(finding, explanation.citations, setSelectedCitation)}
+                                        </span>
+                                      </li>
+                                    ))}
+                                    {scoreFindings.length > 0 && nonScoreFindings.length > 0 && (
+                                      <li className="text-xs text-slate-500 italic mt-2">
+                                        See Evidence tab for detailed score breakdown.
+                                      </li>
+                                    )}
+                                  </>
+                                );
+                              })()}
+                            </ul>
+                          </div>
+                        )}
+
+                        {/* C. Next actions (SOP-aligned) */}
+                        {explanation.recommended_action && (
+                          <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                            <h4 className="text-xs font-semibold text-blue-900 mb-2">Next Actions (SOP-aligned)</h4>
+                            <p className="text-sm text-blue-800 mb-2">
+                              {renderTextWithCitations(explanation.recommended_action, explanation.citations, setSelectedCitation)}
+                            </p>
+                            <ul className="space-y-1 text-xs text-blue-700">
+                              <li>• Manual review of account activity and relationships</li>
+                              <li>• Request additional account context if needed</li>
+                              <li>• Enhanced due diligence for high-risk cases</li>
+                            </ul>
+                            <p className="text-xs text-blue-600 italic mt-2">
+                              These recommendations are non-automated; final decision by the reviewing analyst.
+                            </p>
+                          </div>
+                        )}
+
+                        {/* D. Missing info to confirm */}
+                        {explanation.citations && explanation.citations.length > 0 && (
+                          <div>
+                            <h4 className="text-xs font-semibold text-slate-700 mb-2">Missing Info to Confirm</h4>
+                            <ul className="space-y-1">
+                              {generateMissingInfo(explanation.citations).map((item, index) => (
+                                <li key={index} className="text-xs text-slate-600 flex items-start gap-2">
+                                  <span className="text-amber-600">•</span>
+                                  <span>{item}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+
+                        {/* E. Sources */}
+                        {explanation.citations && explanation.citations.length > 0 && (
+                          <div className="border-t border-slate-200 pt-3">
+                            <details className="text-xs text-slate-600">
+                              <summary className="cursor-pointer hover:text-slate-900 font-medium">
+                                {explanation.citations.length} policy citation{explanation.citations.length > 1 ? 's' : ''} available. Click to view sources.
+                              </summary>
+                              <ul className="mt-2 space-y-1 pl-4">
+                                {explanation.citations.map((citation) => (
+                                  <li key={citation.id} className="flex items-start gap-2">
+                                    <span className="text-blue-600 font-medium">[{citation.id}]</span>
+                                    <span>
+                                      <span className="font-medium">{citation.doc}</span>
+                                      <span className="text-slate-500"> — {citation.section}</span>
+                                    </span>
+                                  </li>
+                                ))}
+                              </ul>
+                            </details>
+                            <p className="text-xs text-slate-500 italic mt-2">
+                              Click citation numbers in text above to view full details.
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="text-center py-6 text-slate-500 text-sm">
+                        No policy-backed narrative available for this case.
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Risk Evidence Section */}
@@ -871,6 +1205,14 @@ export default function Investigation() {
           )}
         </div>
       </div>
+
+      {/* Citation Modal */}
+      {selectedCitation && (
+        <CitationModal
+          citation={selectedCitation}
+          onClose={() => setSelectedCitation(null)}
+        />
+      )}
     </div>
   );
 }

@@ -533,7 +533,9 @@ python ml-models/training/train_risk_model.py --source database
 - [PSI Monitoring Guide](docs/psi-monitoring.md)
 - [Model Monitoring](docs/model-monitoring.md)
 - [Risk Event Lifecycle](docs/risk-event-lifecycle.md)
+- [Cost & Latency Strategy](docs/cost-latency-strategy.md)
 - [Data Contract](docs/data-contract.md)
+- [Security & Privacy](docs/security_privacy.md)
 - [Validation Report](docs/validation-report.md)
 - [Test Data Catalog](test_data/README.md)
 

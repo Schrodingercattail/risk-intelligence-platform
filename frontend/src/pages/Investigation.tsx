@@ -367,7 +367,7 @@ export default function Investigation() {
     fetchExplanation(caseItem.user_id); // Fetch explanation in background
   };
 
-  // Fetch cases from backend API
+  // Fetch cases from backend API (uses server-side search when searchQuery is set)
   useEffect(() => {
     const fetchCases = async () => {
       try {
@@ -375,7 +375,13 @@ export default function Investigation() {
         setError(null);
         console.log('=== Investigation: Fetching cases from backend ===');
 
-        const response = await riskApi.getCases({ page: 1, page_size: PAGE_SIZE });
+        // Use server-side search if search query exists
+        const apiParams: { page: number; page_size: number; search?: string } = { page: 1, page_size: searchQuery ? 100 : PAGE_SIZE };
+        if (searchQuery.trim()) {
+          apiParams.search = searchQuery.trim();
+        }
+
+        const response = await riskApi.getCases(apiParams);
         console.log('=== Investigation: API response ===', response);
 
         if (!response) {
@@ -420,7 +426,7 @@ export default function Investigation() {
     };
 
     fetchCases();
-  }, []);
+  }, [searchQuery]); // Re-fetch when search query changes
 
   // Load more cases
   const loadMoreCases = async () => {
@@ -453,40 +459,8 @@ export default function Investigation() {
   // Check if there are more cases to load
   const hasMoreCases = cases.length < totalCases;
 
-  // Filter by search with smart matching
-  const filteredCases = useMemo(() => {
-    if (!searchQuery) return cases;
-    const query = searchQuery.toLowerCase().trim();
-
-    return cases.filter((c) => {
-      const caseId = c.case_id.toLowerCase();
-      const userId = c.user_id.toLowerCase();
-
-      // Direct match with case_id or user_id
-      if (caseId === query || userId === query) {
-        return true;
-      }
-
-      // Numeric match: if searching for "01428", match "CASE-01428"
-      const isNumericQuery = /^\d+$/.test(query);
-      if (isNumericQuery) {
-        const caseIdNumber = caseId.replace('case-', '');
-        return caseIdNumber === query;
-      }
-
-      // CASE- prefix match: "case-01428" matches "CASE-01428"
-      if (query.startsWith('case-') || query.startsWith('case_')) {
-        return caseId === query;
-      }
-
-      // U prefix match: "u01428" matches "U01428"
-      if (query.startsWith('u')) {
-        return userId === query;
-      }
-
-      return false;
-    });
-  }, [cases, searchQuery]);
+  // Filter by search (server-side search is used, so cases are already filtered)
+  const filteredCases = cases;
 
   const getRiskLevelColor = (level: string) => {
     switch (level) {

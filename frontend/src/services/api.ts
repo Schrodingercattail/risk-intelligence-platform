@@ -46,11 +46,12 @@ export const api = {
 // API endpoints
 export const riskApi = {
   getOverview: () => api.get<RiskOverview>('/api/risk/overview'),
-  getCases: (params?: { page?: number; page_size?: number; risk_level?: string }) => {
+  getCases: (params?: { page?: number; page_size?: number; risk_level?: string; search?: string }) => {
     const queryParams: Record<string, any> = {};
     if (params?.page) queryParams.page = params.page;
     if (params?.page_size) queryParams.page_size = params.page_size;
     if (params?.risk_level) queryParams.risk_level = params.risk_level;
+    if (params?.search) queryParams.search = params.search;
     const query = new URLSearchParams(queryParams).toString();
     return api.get<RiskEventList>(`/api/risk/cases${query ? `?${query}` : ''}`);
   },

@@ -57,6 +57,9 @@ yarn-error.log*
 # Generated data
 data/generated/*.csv
 
+# Explain evaluation artifacts
+eval/explain_eval_results.csv
+eval/raw_explanations/
 # Docker
 docker-compose.override.yml
 

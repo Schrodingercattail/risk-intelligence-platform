@@ -461,7 +461,7 @@ export default function Investigation() {
       <div>
         <h1 className="text-2xl font-semibold text-slate-900">Investigation Workspace</h1>
         <p className="text-sm text-slate-600 mt-1">
-          Risk investigation workspace for analysts to review risk cases and evidence from batch analysis
+          Review risk cases with multi-signal evidence, policy-backed explanations, and investigation context
         </p>
       </div>
 

@@ -1,7 +1,7 @@
 /**
  * Risk Intelligence Platform
  *
- * Machine Learning–Driven Detection, Monitoring & Investigation.
+ * Multi-Signal Risk Detection with Explainable Investigation.
  * Enterprise SaaS Risk Intelligence MVP.
  */
 import { useState, useMemo, useEffect } from 'react';
@@ -378,7 +378,7 @@ export default function RiskCommandCenter() {
         {/* ==================================== PAGE HEADER ==================================== */}
         <div>
           <h1 className="text-2xl font-semibold text-slate-900">Risk Intelligence Platform</h1>
-          <p className="text-sm text-slate-500 mt-1">Machine Learning–Driven Detection, Monitoring & Investigation</p>
+          <p className="text-sm text-slate-500 mt-1">Multi-Signal Risk Detection with Explainable Investigation</p>
         </div>
 
         {/* ==================================== LOADING STATE ==================================== */}

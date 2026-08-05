@@ -71,7 +71,7 @@ export default function Layout() {
                     Risk Intelligence Platform
                   </h1>
                   <p className="text-xs text-slate-500">
-                    Machine Learning–Driven Detection, Monitoring & Investigation
+                    Multi-Signal Risk Detection with Explainable Investigation
                   </p>
                 </div>
               </div>

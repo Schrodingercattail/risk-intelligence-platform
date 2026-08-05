@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head><title>Test Upload</title></head>
+<body>
+<h1>Test CSV Upload</h1>
+<form id="uploadForm">
+  <input type="file" id="users" accept=".csv" required><br>
+  <input type="file" id="devices" accept=".csv" required><br>
+  <input type="file" id="trades" accept=".csv" required><br>
+  <input type="file" id="withdrawals" accept=".csv" required><br>
+  <input type="checkbox" id="clear_existing" checked>
+  <label for="clear_existing">Clear existing data</label><br>
+  <button type="submit">Upload</button>
+</form>
+<div id="result"></div>
+
+<script>
+document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const formData = new FormData();
+  formData.append('users', document.getElementById('users').files[0]);
+  formData.append('devices', document.getElementById('devices').files[0]);
+  formData.append('trades', document.getElementById('trades').files[0]);
+  formData.append('withdrawals', document.getElementById('withdrawals').files[0]);
+  formData.append('clear_existing', String(document.getElementById('clear_existing').checked));
+
+  try {
+    const response = await fetch('http://localhost:8000/api/pipeline/upload', {
+      method: 'POST',
+      body: formData
+    });
+    const data = await response.json();
+    document.getElementById('result').innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+  } catch (error) {
+    document.getElementById('result').innerHTML = `<p style="color:red">Error: ${error.message}</p>`;
+  }
+});
+</script>
+</body>
+</html>

@@ -26,7 +26,7 @@ class Settings(BaseSettings):
 
     # API
     API_PREFIX: str = "/api"
-    CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:3001", "http://frontend:3000"]
+    CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:3001", "http://localhost:5173", "http://frontend:3000"]
 
     # Model Paths - Use absolute path for consistency
     MODEL_PATH: str = MODEL_PATH_ABSOLUTE

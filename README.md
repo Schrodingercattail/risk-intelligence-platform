@@ -1,8 +1,8 @@
 # Risk Intelligence Platform
 
-**Machine Learning–Driven Detection, Monitoring & Investigation**
+**Multi-Signal Risk Detection & Explainable Investigation Platform**
 
-A machine learning-driven risk detection and monitoring platform designed to identify suspicious behaviors, combine multiple risk signals, and support investigation workflows across risk-sensitive industries.
+An ML-based risk detection platform with policy-backed investigation support, combining machine learning, rule engines, and graph analysis to identify suspicious behaviors and support analyst workflows across risk-sensitive industries.
 
 ---
 
@@ -16,23 +16,45 @@ The platform implements a complete risk detection pipeline from data ingestion t
 
 ## Screenshots
 
-**Risk Command Center** — Executive risk overview with detection intelligence and investigation queue
+### 1. Risk Overview
+
+**Risk Command Center** — Executive dashboard with detection intelligence, risk distribution, and investigation queue metrics
 
 ![Risk Overview](docs/screenshots/risk-overview.png)
 
-**Investigation Workspace** — Case analysis with risk evidence attribution and network signals
+### 2. Investigation Queue
 
-![Investigation Case Analysis](docs/screenshots/investigation-case-analysis.png)
+**Investigation Queue** — Filterable case list with risk levels, detection methods, and recommended actions for analyst review
 
-**Risk Evidence Detail** — Transaction, network, and rule evidence with feature attribution
+![Investigation Queue](docs/screenshots/investigation-queue.png)
+
+### 3. Investigation Risk Evidence
+
+**Risk Evidence Detail** — Transaction, network, and rule evidence with feature attribution for case analysis
 
 ![Investigation Risk Evidence](docs/screenshots/investigation-risk-evidence.png)
 
-**Model Monitoring** — PSI drift detection and performance metrics tracking
+### 4. Policy-Backed Narrative
+
+**Citations Display** — Policy-backed explanations with clickable citations to regulatory documents and investigation SOPs
+
+![Policy Citations](docs/screenshots/investigation-policy-citations.png)
+
+### 5. Evidence Gap Investigation Case
+
+**Missing Information Panel** — Evidence completeness checking identifies missing investigation inputs (device history, account age, KYC status)
+
+![Evidence Gap Case](docs/screenshots/investigation-evidence-gap.png)
+
+### 6. Model Monitoring
+
+**Model Health Dashboard** — PSI drift detection, performance metrics (AUC, KS), and feature distribution tracking
 
 ![Model Monitoring](docs/screenshots/model-monitoring.png)
 
-**Data Pipeline** — Dataset upload and processing workflow
+### 7. Data Pipeline
+
+**Pipeline Status** — Dataset upload, validation, feature engineering, and risk scoring workflow with stage completion tracking
 
 ![Data Pipeline](docs/screenshots/data-pipeline.png)
 
@@ -50,22 +72,29 @@ This platform is an **investigation support system**, not an auto-ban system. Th
 - Graph Detection — Network analysis for coordinated behavior rings
 - Multi-Signal Fusion — Weighted combination with business override logic
 
+**Investigation Support**
+- Policy-Backed Explanations — Risk narratives grounded in retrieved policy citations
+- Evidence Completeness Checking — Identification of missing investigation inputs
+- Evidence Aggregation — Transaction, network, feature, and rule signals
+- Audience-Based Formatting — Investigator (full detail) vs business (reduced sensitivity) modes
+- Citation-Supported Narratives — Each key finding backed by policy document references
+- Investigation Queue — Filterable workflow for analyst review
+
 **Risk Monitoring**
 - PSI Drift Detection — Population Stability Index for model drift monitoring
 - Model Performance Tracking — AUC, KS, feature distribution monitoring
 - Baseline Validation — Automated comparison against training distributions
 
-**Investigation Support**
-- Risk Event Lifecycle — Complete audit trail with pipeline traceability
-- Signal Attribution — Which detection methods contributed to each risk score
-- Evidence Factors — Detailed feature-level explanations for risk decisions
-- Investigation Queue — Filterable workflow for analyst review
+**Optional AI Enhancement**
+- LLM-Assisted Explanations — Natural language case summaries when enabled
+- Privacy Controls — Configurable identifier redaction before external LLM calls
+- Deterministic Fallback — Model-based explanations when LLM unavailable
 
 ---
 
 ## Architecture Overview
 
-### Current Prototype Architecture
+### Current Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -84,7 +113,7 @@ This platform is an **investigation support system**, not an auto-ban system. Th
                             │
                             ▼
 ┌─────────────────────────────────────────────────────────────┐
-│              RISK DETECTION ENGINE                            │
+│              MULTI-SIGNAL RISK SCORING                       │
 ├─────────────────────────────────────────────────────────────┤
 │                                                               │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐    │
@@ -107,11 +136,112 @@ This platform is an **investigation support system**, not an auto-ban system. Th
                             │
                             ▼
 ┌─────────────────────────────────────────────────────────────┐
+│         INVESTIGATION EXPLANATION LAYER                      │
+├─────────────────────────────────────────────────────────────┤
+│  • Evidence Retrieval (Transaction, Network, Rule, Feature) │
+│  • Policy RAG Retrieval (Local markdown policy documents)    │
+│  • Citation Generation & Validation                         │
+│  • Evidence Completeness Checking                           │
+│  • Audience Formatting (Investigator vs Business)            │
+│  • Optional LLM Explanation Generation                       │
+│  • Cache / Rate Limiting / Metrics                           │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│              HUMAN ANALYST REVIEW                            │
+├─────────────────────────────────────────────────────────────┤
+│  Policy-backed narratives → Investigation decisions         │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
 │              MONITORING & DRIFT DETECTION                     │
 ├─────────────────────────────────────────────────────────────┤
 │  PSI Analysis → Model Drift Detection → Retraining          │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+**Key Architecture Principles:**
+
+1. **LLM is Optional** - Risk detection operates independently of LLM services
+2. **Policy-Grounded Explanations** - LLM generation (when enabled) is constrained by retrieved policy citations
+3. **Deterministic Fallback** - Platform provides structured explanations when LLM unavailable
+4. **Evidence-First** - All explanations backed by actual database evidence, not synthetic content
+
+---
+
+## Policy-Backed Investigation System
+
+### Citation Architecture
+
+The platform implements a sophisticated citation system that grounds risk explanations in internal policy documents rather than unsupported AI-generated conclusions.
+
+**How It Works:**
+
+1. **Policy RAG Retrieval** - Local retrieval from markdown policy documents (AML indicators, investigation SOP, KYC requirements)
+2. **Finding Classification** - Each key finding is classified by domain (network, transaction, account, ML anomaly)
+3. **Domain-Enforced Retrieval** - RAG queries scoped to relevant policy sections before retrieval
+4. **Citation Registry** - Deduplication and budget control (max 5 citations per explanation)
+5. **Coverage Validation** - Every finding must have at least one citation
+6. **Audience Formatting** - Quote redaction for business mode, full detail for investigators
+
+**Value Proposition:**
+
+Risk analysts receive explanations where each key hypothesis is backed by specific policy document references, enabling:
+- Regulatory compliance validation
+- Audit trail for investigation decisions
+- Training material for new analysts
+- Consistent interpretation across teams
+
+### Evidence Completeness Checking
+
+The system identifies missing investigation inputs after risk detection, not just risk signals.
+
+**Checked Evidence Types:**
+- Account age and onboarding information
+- Transaction history availability
+- Device fingerprint and IP history
+- KYC verification status
+
+**Example Output:**
+```json
+{
+  "missing_info": [
+    "Device fingerprint and IP history",
+    "Customer KYC verification status"
+  ]
+}
+```
+
+**Engineering Design:**
+
+This separates detection capability from investigation readiness. A high-risk alert may be technically correct but practically unactionable without supporting evidence. The system explicitly identifies these gaps.
+
+### Performance & Production Engineering
+
+**Explanation Cache:**
+- In-memory TTL cache (default: 600 seconds)
+- Configurable max size (default: 1024 entries)
+- Cache key based on user_id, audience, pipeline_run_id, policy_version
+
+**Rate Limiting:**
+- 30 requests per minute per client IP
+- Sliding window implementation
+- Configurable via `EXPLAIN_RATE_LIMIT_PER_MIN`
+
+**Observability:**
+- `/api/risk/metrics/explain` endpoint exposes:
+  - Cache hit rate
+  - Fallback rate (LLM disabled, LLM failed, LLM success)
+  - Latency percentiles (p50, p95, avg)
+  - Request counters
+
+**Engineering Trade-offs:**
+
+The platform prioritizes reliability over AI novelty. LLM integration is optional, with deterministic fallbacks ensuring continuous operation even when external services fail.
+
+---
 
 ### Data Architecture Explanation
 
@@ -267,9 +397,9 @@ The platform architecture supports several evolution paths for production deploy
 - Data lake integration (S3, ADLS, HDFS)
 
 **Streaming Pipeline Support**
-- Real-time event processing (Kafka, Kinesis, Pub/Sub)
-- Streaming feature computation
-- Low-latency risk scoring for transaction-time decisions
+- Batch event processing (Kafka, Kinesis, Pub/Sub) for incremental updates
+- Streaming feature computation for periodic batch scoring
+- Pipeline-based risk scoring for transaction-time decisions
 
 ### Case Management Workflow
 
@@ -292,7 +422,7 @@ The platform architecture supports several evolution paths for production deploy
 - Gradual rollout and shadow mode evaluation
 
 **Alerting & Notifications**
-- Real-time alert generation for critical risk events
+- Batch alert generation for critical risk events
 - Integration with notification systems (Slack, PagerDuty, email)
 - Escalation workflows based on risk severity
 
@@ -302,6 +432,18 @@ The platform architecture supports several evolution paths for production deploy
 - Time-patterned relationship detection
 - Evolution of network clusters over time
 - Sequence-based fraud pattern recognition
+
+**Cross-Account Trading Pattern Detection** (Future Enhancement)
+
+Current implementation detects opposite trading behavior within single accounts.
+
+Future enhancement would analyze coordinated trading patterns across multiple accounts:
+- Opposite trade timing correlation
+- Trading volume similarity analysis
+- Symbol overlap detection
+- Account relationship graph integration
+
+Purpose: Detect potential coordinated trading clusters through multi-account behavioral analysis.
 
 **Optional LLM-Assisted Investigation**
 - Natural language case summaries
@@ -336,34 +478,101 @@ The Investigation page displays model-generated explanations:
 
 These explanations are generated from **model outputs and business logic**, not LLM text generation.
 
-### Optional AI Enhancement
+---
 
-The platform includes an **optional LLM integration** for natural language explanation generation:
+## LLM Reliability and Safety Controls
 
-**Configuration:**
+The platform provides optional LLM-assisted investigation explanations with comprehensive reliability safeguards.
+
+### Core Design Principle
+
+**LLM is optional and not part of risk scoring decisions.**
+
+Risk detection operates independently of LLM services:
+- ML/rule/graph scoring remains deterministic
+- LLM only used for explanation generation when enabled
+- System remains fully functional through deterministic fallback when LLM unavailable
+
+### Configuration Control
+
 ```bash
 # .env file
-ENABLE_LLM_EXPLANATION=true
-ANTHROPIC_API_KEY=your_key_here
+ENABLE_LLM_EXPLANATION=false  # Default: disabled
+ANTHROPIC_API_KEY=           # Required only when enabling LLM
 ```
 
-**When Enabled:**
-- LLM generates natural language case summaries
-- Analyst-friendly narrative explanations
-- Investigation workflow assistance
+### Reliability Safeguards
 
-**Default Behavior (LLM Disabled):**
-- Model-based explanations from risk outputs
-- No API key required
-- Core functionality unaffected
+**Deterministic Fallback:**
+- When LLM disabled: Returns structured model-based explanations
+- When LLM fails: Falls back to model-based explanations
+- When LLM times out: Continues with cached or model-based response
+- Core risk scoring unaffected by LLM availability
 
-**Architecture:**
-The `/explain` endpoint works in both modes:
-- Without LLM: Returns structured model-based explanations
-- With LLM: Returns natural language summaries
-- Failure safety: Falls back to model-based on error
+**Implementation Architecture:**
 
-The platform operates **fully without LLM integration**. LLM is an optional enhancement for narrative explanations, not a dependency for risk scoring or investigation workflow.
+1. **Risk Detection Layer** (No LLM dependency)
+   - ML model generates risk scores
+   - Rule engine applies expert-defined signals
+   - Graph analysis detects network relationships
+   - All risk signals deterministic and cached
+
+2. **Evidence Retrieval Layer** (No LLM dependency)
+   - Transaction evidence from database
+   - Network evidence from cluster analysis
+   - Feature evidence from feature table
+   - Rule evidence derived from feature values
+
+3. **Citation Generation Layer** (No LLM dependency)
+   - Policy RAG retrieval from local markdown documents
+   - Domain enforcement before retrieval
+   - Citation validation and coverage checking
+   - Finding-to-policy mapping
+
+4. **Explanation Layer** (Optional LLM)
+   - When enabled: LLM generates natural language summaries
+   - Constrained by retrieved evidence and policy citations
+   - 5-second timeout protection
+   - Graceful fallback on any failure
+
+### Privacy Controls
+
+```bash
+SHOW_USER_ID_IN_LLM_PROMPT=false  # Redact user IDs from LLM prompts
+LOG_REDACT_USER_ID=true           # Redact user IDs from structured logs
+```
+
+**Sanitization Applied:**
+- IP addresses → [REDACTED_IP]
+- Email addresses → [REDACTED_EMAIL]
+- Phone numbers → [REDACTED_PHONE]
+- Long identifiers → [REDACTED_ID]
+- Thresholds/percentages → [REDACTED_THRESHOLD]
+
+### Performance Controls
+
+```bash
+EXPLAIN_CACHE_TTL_SECONDS=600      # Cache TTL (default: 10 minutes)
+EXPLAIN_CACHE_MAX_SIZE=1024        # Max cache entries
+EXPLAIN_RATE_LIMIT_PER_MIN=30      # Rate limit per client IP
+EXPLAIN_LLM_TIMEOUT_SECONDS=5      # LLM API timeout
+```
+
+### Observability Metrics
+
+The `/api/risk/metrics/explain` endpoint tracks:
+- Cache hit rate
+- Fallback rate (LLM disabled, LLM failed, LLM success)
+- Latency percentiles (p50, p95, avg)
+- Request counters
+
+### Engineering Trade-offs
+
+The platform prioritizes reliability over AI novelty:
+- LLM integration is optional, not required
+- Deterministic fallbacks ensure continuous operation
+- External service failures don't affect risk detection
+- Privacy controls limit data exposure to external AI services
 
 ---
 
@@ -396,6 +605,61 @@ Future:  Enterprise Data → Platform → Risk Event → Case System → Resolut
 **Case Management Directions:**
 1. **Internal Workflow:** Build complete case lifecycle within platform
 2. **External Integration:** API-based connection to existing case systems
+
+---
+
+## Evidence Gap Investigation Case
+
+The platform includes a representative synthetic investigation scenario that demonstrates evidence completeness checking.
+
+### U90001 Investigation Scenario
+
+**Case Characteristics:**
+
+U90001 is a synthetic high-risk case designed to validate evidence gap detection:
+
+| Evidence Type | Status | Notes |
+|---------------|--------|-------|
+| Device Records | ❌ Missing | No device fingerprints or IP history |
+| Account Age | ❌ Missing | No account_created_time available |
+| KYC Verification | ❌ Missing | No KYC level recorded |
+| Transaction History | ✅ Present | 60 high-frequency trade records |
+| Withdrawal History | ✅ Present | 7 withdrawals to new addresses |
+
+**Risk Profile:**
+- **Trading Pattern:** High-frequency opposite trading (BUY → SELL)
+- **Withdrawal Pattern:** Multiple withdrawals to new addresses in one day
+- **Detection:** Elevated ML score due to trading frequency
+- **Evidence Gap:** No device/IP evidence for investigation context
+
+### Design Principle
+
+The system separates:
+- **Risk detection capability** (identifying suspicious behavior)
+- **Investigation evidence completeness** (having sufficient data for investigation)
+
+A high-risk alert may be technically correct but practically unactionable without supporting evidence. The platform explicitly identifies these gaps rather than failing analysis.
+
+### Missing Information Display
+
+When viewing U90001 in the Investigation page, the **Missing Information** panel displays:
+
+```
+Missing Investigation Inputs:
+• Device fingerprint and IP history
+• Account age and onboarding date
+• Customer KYC verification status
+```
+
+### Validation Purpose
+
+This synthetic case demonstrates:
+- Evidence completeness checking identifies investigation blockers
+- Risk detection operates independently of evidence availability
+- Investigation workflow surfaces gaps rather than failing
+- Analysts can prioritize cases with complete evidence
+
+**Note:** This is a representative synthetic scenario, not production customer data. The case is included in validation datasets for testing evidence completeness functionality.
 
 ---
 
@@ -538,6 +802,12 @@ python ml-models/training/train_risk_model.py --source database
 - [Security & Privacy](docs/security_privacy.md)
 - [Validation Report](docs/validation-report.md)
 - [Test Data Catalog](test_data/README.md)
+
+### Architecture Documentation
+
+- [Citation System Design](docs/architecture/citation-system-design.md) — Citation pipeline, domain enforcement, and validation strategy
+- [Citation Taxonomy](docs/architecture/citation-taxonomy.md) — Finding classification and policy mapping rules
+- [LLM Optional Design](docs/architecture/llm-optional-design.md) — Optional explanation layer with fallback behavior and privacy controls
 
 ---
 

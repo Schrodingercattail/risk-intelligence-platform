@@ -7,7 +7,7 @@
  * MVP: Risk investigation workspace for analyst decision support.
  * NOT a Case Management System - no workflow or status tracking.
  */
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { riskApi, PolicyCitation, Explanation } from '../services/api';
 
 // Simple tooltip component
@@ -132,34 +132,6 @@ function filterKeyFindings(findings: string[]): { nonScoreFindings: string[]; sc
   });
 
   return { nonScoreFindings, scoreFindings };
-}
-
-// Generate missing info list from KYC/CDD policy citations
-function generateMissingInfo(citations: PolicyCitation[]): string[] {
-  const kycCitations = citations.filter(c => c.doc.includes('KYC') || c.doc.includes('CDD'));
-
-  if (kycCitations.length > 0) {
-    // Extract relevant missing info from KYC citations
-    const missingItems: string[] = [];
-    const seen = new Set<string>();
-
-    kycCitations.forEach(citation => {
-      const quoteLower = citation.quote.toLowerCase();
-      const relevantTerms = ['account age', 'onboarding', 'volume', 'device', 'ip', 'kyc', 'due diligence'];
-
-      relevantTerms.forEach(term => {
-        if (quoteLower.includes(term) && !seen.has(term)) {
-          seen.add(term);
-          missingItems.push(term.charAt(0).toUpperCase() + term.slice(1));
-        }
-      });
-    });
-
-    return missingItems.length > 0 ? missingItems : ['Account context', 'Trading pattern history'];
-  }
-
-  // Default template if no KYC citations found
-  return ['Account age/onboarding date', 'Expected volume range', 'Device/IP history (template)'];
 }
 
 interface InvestigationCase {
@@ -302,7 +274,12 @@ export default function Investigation() {
     try {
       setLoadingExplanation(true);
       setExplanationError(null);
-      const explanationData = await riskApi.generateExplanation(userId);
+      // Use bypassCache=true to get fresh citations (temporarily for testing)
+      const explanationData = await riskApi.generateExplanation(userId, true);
+      console.log('=== Explanation Debug ===');
+      console.log('Total citations:', explanationData?.citations?.length);
+      console.log('Citation IDs:', explanationData?.citations?.map((c: any) => c.id));
+      console.log('Explanation:', explanationData);
       setExplanation(explanationData);
     } catch (err) {
       console.error('Failed to load explanation:', err);
@@ -848,11 +825,14 @@ export default function Investigation() {
                         )}
 
                         {/* D. Missing info to confirm */}
-                        {explanation.citations && explanation.citations.length > 0 && (
+                        {explanation?.missing_info && explanation.missing_info.length > 0 && (
                           <div>
                             <h4 className="text-xs font-semibold text-slate-700 mb-2">Missing Info to Confirm</h4>
+                            <p className="text-xs text-slate-500 mb-2">
+                              The following evidence gaps were identified in this case:
+                            </p>
                             <ul className="space-y-1">
-                              {generateMissingInfo(explanation.citations).map((item, index) => (
+                              {explanation.missing_info.map((item, index) => (
                                 <li key={index} className="text-xs text-slate-600 flex items-start gap-2">
                                   <span className="text-amber-600">•</span>
                                   <span>{item}</span>

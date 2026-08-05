@@ -519,13 +519,13 @@ class EvidenceService:
                 "description": f"Account is {account_age} days old with {trade_freq} trades in 24h",
             })
 
-        # Rule: High opposite trade ratio (coordinated trading)
+        # Rule: High opposite trade ratio (frequent alternating buy/sell behavior)
         opp_ratio = feature_evidence.get("opposite_trade_ratio")
         if opp_ratio and opp_ratio > 0.4:
             triggered_rules.append({
                 "rule_name": "High opposite trade ratio",
                 "severity": "HIGH",
-                "description": f"Opposite trade ratio of {opp_ratio:.1%} indicates coordinated trading pattern",
+                "description": f"Opposite trade ratio of {opp_ratio:.1%} indicates frequent alternating buy/sell behavior and possible wash trading pattern",
             })
 
         # Rule: Multiple shared devices

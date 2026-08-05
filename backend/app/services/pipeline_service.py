@@ -76,15 +76,39 @@ class PipelineService:
             if max_trade_time:
                 max_timestamp = max_trade_time.isoformat()
 
-        # Determine statuses based on data presence
-        has_data = user_count > 0 and device_count > 0 and trade_count > 0 and withdrawal_count > 0
+        # Determine upload status: upload is complete if users.csv was imported successfully
+        # Empty datasets (0 records) are still valid uploads, just with warnings
+        has_upload = user_count > 0
 
-        upload_status = PipelineStatus.COMPLETED.value if has_data else PipelineStatus.PENDING.value
-        data_sources_status = PipelineStatus.COMPLETED.value if has_data else PipelineStatus.PENDING.value
-        validation_status = PipelineStatus.COMPLETED.value if has_data else PipelineStatus.PENDING.value
+        upload_status = PipelineStatus.COMPLETED.value if has_upload else PipelineStatus.PENDING.value
+        data_sources_status = PipelineStatus.COMPLETED.value if has_upload else PipelineStatus.PENDING.value
+        validation_status = PipelineStatus.COMPLETED.value if has_upload else PipelineStatus.PENDING.value
         feature_engineering_status = PipelineStatus.COMPLETED.value if feature_count > 0 else PipelineStatus.PENDING.value
-        graph_analysis_status = PipelineStatus.COMPLETED.value if cluster_count > 0 else PipelineStatus.PENDING.value
+
+        # Initialize warnings list
+        warnings = []
+
+        # Graph analysis status: completed if clusters exist, OR if device data is empty (analysis completed but no findings)
+        # When device data is empty, graph analysis should still be marked COMPLETED with a warning
+        if cluster_count > 0:
+            graph_analysis_status = PipelineStatus.COMPLETED.value
+        elif device_count == 0 and has_upload:
+            # No device data available - graph analysis completed but found no relationships
+            graph_analysis_status = PipelineStatus.COMPLETED.value
+            warnings.append("No device relationship data available - graph analysis completed with no findings")
+        else:
+            graph_analysis_status = PipelineStatus.PENDING.value
+
         ml_scoring_status = PipelineStatus.COMPLETED.value if risk_event_count > 0 else PipelineStatus.PENDING.value
+
+        # Generate warnings for empty datasets (data quality issues, not upload failures)
+        if has_upload:
+            if device_count == 0:
+                warnings.append("No device records available - device-based analysis disabled")
+            if trade_count == 0:
+                warnings.append("No transaction history available - trading analysis disabled")
+            if withdrawal_count == 0:
+                warnings.append("No withdrawal history available - withdrawal analysis disabled")
 
         # Get pipeline results if completed
         results = None
@@ -105,7 +129,8 @@ class PipelineService:
                 "devices": device_count,
                 "trades": trade_count,
                 "withdrawals": withdrawal_count,
-            } if has_data else None,
+            },  # Always return counts, including 0 for empty datasets
+            "upload_warnings": warnings if warnings else None,  # New field for empty dataset warnings
             "data_sources": data_sources_status,
             "dataset_validation": validation_status,
             "feature_engineering": feature_engineering_status,
@@ -418,12 +443,12 @@ class PipelineService:
         count = 0
         for _, row in df.iterrows():
             user = User(
-                user_id=row["user_id"],
-                country=row.get("country"),
-                kyc_level=row.get("kyc_level"),
+                user_id=str(row["user_id"]),
+                country=str(row.get("country")) if pd.notna(row.get("country")) else None,
+                kyc_level=str(row.get("kyc_level")) if pd.notna(row.get("kyc_level")) else None,
                 account_created_time=pd.to_datetime(row.get("account_created_time")).to_pydatetime()
-                if row.get("account_created_time") else None,
-                vip_level=row.get("vip_level"),
+                if pd.notna(row.get("account_created_time")) else None,
+                vip_level=str(row.get("vip_level")) if pd.notna(row.get("vip_level")) else None,
             )
             self.db.add(user)
             count += 1
@@ -435,15 +460,15 @@ class PipelineService:
         count = 0
         for _, row in df.iterrows():
             device = Device(
-                user_id=row["user_id"],
-                device_id=row.get("device_id"),
-                ip_address=row.get("ip_address"),
-                location=row.get("location"),
-                browser_fingerprint=row.get("browser_fingerprint"),
+                user_id=str(row["user_id"]),
+                device_id=str(row.get("device_id")) if pd.notna(row.get("device_id")) else None,
+                ip_address=str(row.get("ip_address")) if pd.notna(row.get("ip_address")) else None,
+                location=str(row.get("location")) if pd.notna(row.get("location")) else None,
+                browser_fingerprint=str(row.get("browser_fingerprint")) if pd.notna(row.get("browser_fingerprint")) else None,
                 first_seen=pd.to_datetime(row.get("first_seen")).to_pydatetime()
-                if row.get("first_seen") else None,
+                if pd.notna(row.get("first_seen")) else None,
                 last_seen=pd.to_datetime(row.get("last_seen")).to_pydatetime()
-                if row.get("last_seen") else None,
+                if pd.notna(row.get("last_seen")) else None,
             )
             self.db.add(device)
             count += 1
@@ -455,12 +480,12 @@ class PipelineService:
         count = 0
         for _, row in df.iterrows():
             trade = Trade(
-                trade_id=row["trade_id"],
-                user_id=row["user_id"],
-                symbol=row["symbol"],
-                side=row["side"],
-                price=row["price"],
-                quantity=row["quantity"],
+                trade_id=str(row["trade_id"]),
+                user_id=str(row["user_id"]),
+                symbol=str(row["symbol"]),
+                side=str(row["side"]),
+                price=float(row["price"]),
+                quantity=float(row["quantity"]),
                 timestamp=pd.to_datetime(row["timestamp"]).to_pydatetime(),
             )
             self.db.add(trade)
@@ -472,13 +497,24 @@ class PipelineService:
         """Import withdrawals from DataFrame."""
         count = 0
         for _, row in df.iterrows():
+            # Handle is_new_address - convert various boolean representations
+            is_new = None
+            if pd.notna(row.get("is_new_address")):
+                val = row.get("is_new_address")
+                if isinstance(val, bool):
+                    is_new = val
+                elif isinstance(val, str):
+                    is_new = val.lower() in ('true', '1', 'yes')
+                else:
+                    is_new = bool(val)
+
             withdrawal = Withdrawal(
-                withdraw_id=row["withdraw_id"],
-                user_id=row["user_id"],
-                asset=row["asset"],
-                amount=row["amount"],
-                address=row["address"],
-                is_new_address=row.get("is_new_address"),
+                withdraw_id=str(row["withdraw_id"]),
+                user_id=str(row["user_id"]),
+                asset=str(row["asset"]),
+                amount=float(row["amount"]),
+                address=str(row["address"]),
+                is_new_address=is_new,
                 timestamp=pd.to_datetime(row["timestamp"]).to_pydatetime(),
             )
             self.db.add(withdrawal)

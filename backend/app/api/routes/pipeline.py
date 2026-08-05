@@ -34,7 +34,7 @@ async def upload_data(
     devices: UploadFile | None = File(None),
     trades: UploadFile | None = File(None),
     withdrawals: UploadFile | None = File(None),
-    clear_existing: bool = False,
+    clear_existing: bool = Form(False),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -51,6 +51,9 @@ async def upload_data(
 
     Rejects incomplete uploads with meaningful error response.
     """
+    # Debug logging
+    print(f"[UPLOAD] Received request - users: {users.filename if users else None}, devices: {devices.filename if devices else None}, trades: {trades.filename if trades else None}, withdrawals: {withdrawals.filename if withdrawals else None}, clear_existing: {clear_existing}")
+
     # Validate that all required files are provided
     required_files = {
         'users': users,
@@ -147,6 +150,8 @@ async def upload_data(
         )
 
     except Exception as e:
+        import traceback
+        traceback.print_exc()  # Log full traceback to console
         return DataUploadResponse(
             message=f"Upload failed: {str(e)}",
             files_processed=files_uploaded,

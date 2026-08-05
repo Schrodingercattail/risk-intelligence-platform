@@ -8,16 +8,18 @@
 
 ## Repository Purpose
 
-This repository contains an **industry-agnostic Risk Intelligence Platform prototype** that demonstrates machine learning–driven risk detection, monitoring, and investigation workflows.
+This repository contains an **industry-agnostic Risk Intelligence Platform prototype** that demonstrates multi-signal risk detection with policy-backed investigation workflows.
 
 The platform showcases:
 - Complete ML risk detection pipeline
 - Multi-signal fusion architecture (ML + Rules + Graph)
+- Policy-backed investigation explanations with citations
+- Evidence completeness checking
 - Model monitoring and drift detection (PSI)
 - Investigation workflow support
-- Explainable risk decisions
+- Optional LLM-assisted explanation generation
 
-**Primary Use Case:** Demonstration of production-ready ML system architecture patterns applicable across risk-sensitive industries.
+**Primary Use Case:** Demonstration of production-ready ML system architecture patterns with policy-grounded investigation support applicable across risk-sensitive industries.
 
 ---
 
@@ -25,9 +27,9 @@ The platform showcases:
 
 **Name:** Risk Intelligence Platform
 
-**Short Description:** Machine Learning–Driven Detection, Monitoring & Investigation
+**Short Description:** Multi-Signal Risk Detection & Explainable Investigation Platform
 
-**One-Liner:** A machine learning-driven risk detection and monitoring platform designed to identify suspicious behaviors, combine multiple risk signals, and support investigation workflows across risk-sensitive industries.
+**One-Liner:** An ML-based risk detection platform with policy-backed investigation support designed to identify suspicious behaviors, combine multiple risk signals, and support analyst workflows across risk-sensitive industries.
 
 ---
 
@@ -105,9 +107,25 @@ The architecture is designed to be transferable to multiple domains:
                             │
                             ▼
 ┌─────────────────────────────────────────────────────────────┐
-│              MONITORING & EXPLAINABILITY                      │
+│         INVESTIGATION EXPLANATION LAYER                      │
 ├─────────────────────────────────────────────────────────────┤
-│  PSI Monitoring + Model Explainability + Investigation       │
+│  • Evidence Retrieval • Policy RAG • Citation Generation     │
+│  • Evidence Completeness • Audience Formatting               │
+│  • Optional LLM Explanation • Cache / Rate Limiting          │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│              HUMAN ANALYST REVIEW                            │
+├─────────────────────────────────────────────────────────────┤
+│  Policy-backed narratives → Investigation decisions         │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│              MONITORING & DRIFT DETECTION                     │
+├─────────────────────────────────────────────────────────────┤
+│  PSI Monitoring + Model Performance + Baseline Validation     │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -118,6 +136,7 @@ The architecture is designed to be transferable to multiple domains:
 **Machine Learning:** LightGBM, scikit-learn, pandas
 **Graph:** NetworkX
 **Monitoring:** PSI (Population Stability Index)
+**Citations:** Local markdown policy RAG (no external dependencies)
 
 ---
 
@@ -130,11 +149,20 @@ The architecture is designed to be transferable to multiple domains:
 - **Graph Detection** - Network analysis for coordinated behavior
 - **Multi-Signal Fusion** - Weighted combination (0.5 ML + 0.3 Rule + 0.2 Graph)
 
+### Policy-Backed Investigation System
+
+- **Citation Generation** - Each key finding backed by policy document references
+- **Evidence Retrieval** - Transaction, network, feature, and rule evidence aggregation
+- **Evidence Completeness** - Missing investigation input detection
+- **Audience Modes** - Investigator (full detail) vs business (reduced sensitivity)
+- **Domain-Enforced RAG** - Citations scoped to relevant policy sections
+
 ### Risk Monitoring
 
 - **PSI Drift Detection** - Population Stability Index for model drift
 - **Model Performance Tracking** - AUC, KS, feature distribution monitoring
 - **Baseline Validation** - Automated comparison against training distributions
+- **Explanation Metrics** - Cache hit rate, latency tracking, fallback monitoring
 
 ### Investigation Support
 
@@ -142,6 +170,7 @@ The architecture is designed to be transferable to multiple domains:
 - **Signal Attribution** - Which detection methods contributed
 - **Evidence Factors** - Detailed feature-level explanations
 - **Investigation Queue** - Filterable workflow for analyst review
+- **Optional LLM Assistance** - Natural language summaries when enabled
 
 ---
 

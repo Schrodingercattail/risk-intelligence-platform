@@ -20,6 +20,7 @@ class PolicyRAGService:
     - Loads markdown files under repo_root/policies/*.md
     - Splits by headings (#, ##, ###)
     - Keyword-scores chunks and returns topK
+    - Filters out metadata chunks (Status, Purpose, Demo Template notices)
     """
 
     def __init__(self, policies_dir: str | None = None):
@@ -52,13 +53,29 @@ class PolicyRAGService:
 
         self._chunks = chunks
 
-    def search(self, query: str, top_k: int = 5) -> List[PolicyChunk]:
+    def search(self, query: str, top_k: int = 5, allowed_docs: List[str] = None) -> List[PolicyChunk]:
+        """
+        Search for chunks matching query.
+
+        Args:
+            query: Search query string
+            top_k: Maximum number of results to return
+            allowed_docs: Optional list of document names to restrict search to
+
+        Returns:
+            List of matching PolicyChunk objects, sorted by relevance
+        """
         if not self._chunks:
             self.load()
 
         q_tokens = self._tokenize(query)
         scored: List[Tuple[float, PolicyChunk]] = []
+
         for ch in self._chunks:
+            # Filter by allowed documents if specified
+            if allowed_docs and ch.doc not in allowed_docs:
+                continue
+
             score = self._score(q_tokens, ch.text)
             if score > 0:
                 scored.append((score, ch))
@@ -67,6 +84,44 @@ class PolicyRAGService:
         return [c for _, c in scored[:top_k]]
 
     # -------- internal helpers --------
+
+    def _is_metadata_chunk(self, chunk: PolicyChunk) -> bool:
+        """
+        Check if a chunk is metadata (not real policy content).
+
+        Metadata chunks contain:
+        - Status: DEMO TEMPLATE
+        - Purpose: Provide
+        - non-authoritative
+        - Replace with your organization's
+
+        Args:
+            chunk: PolicyChunk to check
+
+        Returns:
+            True if this is a metadata chunk that should be filtered out
+        """
+        text_lower = chunk.text.lower()
+
+        # Check for metadata markers
+        metadata_patterns = [
+            "status:",
+            "purpose:",
+            "demo template",
+            "non-authoritative",
+            "replace with your organization",
+        ]
+
+        for pattern in metadata_patterns:
+            if pattern in text_lower:
+                return True
+
+        # Also check if the chunk is very short (less than 30 chars)
+        # Short chunks are often headers or metadata
+        if len(chunk.text.strip()) < 30:
+            return True
+
+        return False
 
     def _split_markdown(self, doc: str, md: str) -> List[PolicyChunk]:
         lines = md.splitlines()
@@ -83,14 +138,17 @@ class PolicyRAGService:
                 safe_section = re.sub(r"[^a-zA-Z0-9]+", "_", section).strip("_")
                 idx = len([c for c in chunks if c.doc == doc and c.section == section]) + 1
                 chunk_id = f"{doc}#{safe_section}#{idx:03d}"
-                chunks.append(
-                    PolicyChunk(
-                        chunk_id=chunk_id,
-                        doc=doc,
-                        section=section,
-                        text=content,
-                    )
+
+                chunk = PolicyChunk(
+                    chunk_id=chunk_id,
+                    doc=doc,
+                    section=section,
+                    text=content,
                 )
+
+                # Filter out metadata chunks (Status, Purpose, Demo Template notices)
+                if not self._is_metadata_chunk(chunk):
+                    chunks.append(chunk)
             buf = []
 
         for line in lines:

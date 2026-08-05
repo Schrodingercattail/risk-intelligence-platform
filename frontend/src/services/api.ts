@@ -69,8 +69,8 @@ export const riskApi = {
     const query = limit ? `?limit=${limit}` : '';
     return api.get<NetworkSignals>(`/api/risk/cases/${userId}/network-signals${query}`);
   },
-  generateExplanation: (userId: string) =>
-    api.post<Explanation>('/api/risk/explain', { user_id: userId }),
+  generateExplanation: (userId: string, bypassCache: boolean = false) =>
+    api.post<Explanation>(`/api/risk/explain?bypass_cache=${bypassCache ? 'true' : 'false'}`, { user_id: userId }),
 };
 
 export const pipelineApi = {
@@ -81,9 +81,9 @@ export const pipelineApi = {
     if (files.devices) formData.append('devices', files.devices);
     if (files.trades) formData.append('trades', files.trades);
     if (files.withdrawals) formData.append('withdrawals', files.withdrawals);
-    // Pass clear_existing as query parameter
-    const url = `/api/pipeline/upload?clear_existing=${clearExisting ? 'true' : 'false'}`;
-    return api.upload<DataUploadResponse>(url, formData);
+    // Pass clear_existing as form field (backend expects Form parameter)
+    formData.append('clear_existing', String(clearExisting));
+    return api.upload<DataUploadResponse>('/api/pipeline/upload', formData);
   },
   runPipeline: (options: { run_full_pipeline?: boolean; generate_risk_events?: boolean }) =>
     api.post<PipelineRunResult>('/api/pipeline/run', options),
@@ -264,6 +264,7 @@ export interface Explanation {
   citations: PolicyCitation[];
   explanation_source: 'LLM' | 'MODEL_FALLBACK';
   llm_error?: string;
+  missing_info?: string[];  // Evidence gaps from actual unavailable fields
 }
 
 export interface PipelineStatus {
@@ -276,6 +277,7 @@ export interface PipelineStatus {
     trades: number;
     withdrawals: number;
   };
+		upload_warnings?: string[];  // Warnings for empty datasets (e.g., "No device records available")
 
   // Pipeline stages
   data_sources: string;

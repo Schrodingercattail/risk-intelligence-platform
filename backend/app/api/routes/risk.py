@@ -17,6 +17,9 @@ from app.services.graph_service import GraphAnalysisService
 from app.services.llm_service import LLMExplanationService, sanitize_policy_quote
 from app.services.policy_rag_service import PolicyRAGService
 from app.services.explain_metrics import get_explain_metrics as _get_explain_metrics, log_explain_request
+from app.services.citation_service import SimpleCitationService, create_simple_citation_service
+from app.services.citation_retrieval_service import CitationRetrievalService, create_citation_retrieval_service
+from app.services.data_quality_service import create_data_quality_service
 from app.models.database import RiskEvent, User, RiskLevel, Case, CaseStatus
 from app.models.schemas import (
     RiskOverviewResponse,
@@ -181,7 +184,7 @@ def _get_policy_version() -> str:
         return "unknown"
 
 
-def _generate_cache_key(user_id: str, audience: str, risk_event: dict) -> str:
+def _generate_cache_key(user_id: str, audience: str, risk_event: dict, cache_buster: str = "") -> str:
     """Generate cache key from relevant fields."""
     # Use key identifiers that affect explanation output
     key_parts = [
@@ -190,6 +193,7 @@ def _generate_cache_key(user_id: str, audience: str, risk_event: dict) -> str:
         str(risk_event.get('pipeline_run_id', 'no-run')),
         str(risk_event.get('model_version', 'no-model')),
         _get_policy_version(),
+        cache_buster,  # For cache invalidation
     ]
     key_string = "|".join(key_parts)
     return hashlib.sha256(key_string.encode()).hexdigest()
@@ -268,12 +272,6 @@ def _generate_model_based_explanation(
     for factor in factors[:3]:  # Top 3 factors
         factor_name = factor.get('factor_name', 'Unknown factor')
         key_findings.append(f"Elevated {factor_name}")
-
-    # Add network information if applicable
-    if graph_data and graph_data.get('nodes'):
-        connected_count = len(graph_data['nodes']) - 1  # Exclude self
-        if connected_count > 0:
-            key_findings.append(f"Connected to {connected_count} other account(s) through shared devices/IPs")
 
     # If no findings, add default
     if not key_findings:
@@ -813,11 +811,110 @@ async def get_user_graph(
     return GraphDataResponse(**graph_data)
 
 
+def _retrieve_finding_specific_citations(
+    key_findings: List[str],
+    ml_score: Optional[float],
+    rule_score: Optional[float],
+    graph_score: Optional[float],
+    factors: List[dict],
+    has_graph_evidence: bool,
+    audience: str
+) -> tuple[List[dict], dict]:
+    """
+    Retrieve finding-specific citations using evidence-aware mapping.
+
+    For each finding, generates a targeted RAG query based on finding type
+    and retrieves relevant policy citations. Uses CitationRegistry for
+    deduplication and budget control.
+
+    Args:
+        key_findings: List of finding texts
+        ml_score: ML signal score
+        rule_score: Rule signal score
+        graph_score: Graph signal score
+        factors: Risk factor list
+        has_graph_evidence: Whether graph evidence exists
+        audience: Audience mode for quote redaction
+
+    Returns:
+        Tuple of (all_citations list, finding_to_citations dict)
+    """
+    # Initialize citation mapper and registry
+    mapper = DomainAwareCitationMapper()
+    registry = create_citation_registry(max_citations=10)
+
+    # Map findings to citation queries
+    queries = mapper.map_findings_to_queries(
+        key_findings=key_findings,
+        ml_score=ml_score,
+        rule_score=rule_score,
+        graph_score=graph_score,
+        factors=factors,
+        has_graph_evidence=has_graph_evidence
+    )
+
+    # Retrieve citations for each finding
+    finding_to_citations = {}
+    rag = PolicyRAGService()
+
+    for finding_text, query_obj in zip(key_findings, queries):
+        finding_citation_ids = []
+
+        # Skip RAG for empty queries
+        if not query_obj.query or query_obj.query.strip() == "":
+            finding_to_citations[finding_text] = finding_citation_ids
+            continue
+
+        try:
+            # Retrieve finding-specific citations
+            chunks = rag.search(query_obj.query, top_k=query_obj.top_k)
+
+            for chunk in chunks:
+                # Apply audience-based quote redaction
+                if audience == "business":
+                    sanitized_quote = "[REDACTED]"
+                else:
+                    sanitized_quote = sanitize_policy_quote(chunk.text[:400].strip())
+
+                # Register citation (deduplication happens here)
+                citation_id = registry.register(
+                    doc=chunk.doc,
+                    section=chunk.section,
+                    quote=sanitized_quote,
+                    chunk_id=chunk.chunk_id,
+                    finding_type=query_obj.finding_type.value if query_obj.finding_type else None
+                )
+
+                finding_citation_ids.append(citation_id)
+
+        except Exception as e:
+            # RAG failure for this finding — continue with others
+            logger.warning(f"RAG retrieval failed for finding '{finding_text[:50]}...': {e}")
+
+        finding_to_citations[finding_text] = finding_citation_ids
+
+    # Get final citations within budget (deduplicated and prioritized)
+    all_citations = registry.get_citation_dict()
+
+    # Log registry stats for monitoring
+    stats = registry.get_stats()
+    final_count = len(all_citations)
+    if stats["total_registered"] > final_count:
+        # Budget was enforced - log the reduction
+        logger.info(
+            f"Citation registry: {stats['total_registered']} registered, "
+            f"{final_count} in response (deduplication saved {stats['deduplication_saved']})"
+        )
+
+    return all_citations, finding_to_citations
+
+
 @router.post("/explain", response_model=ExplanationResponse)
 async def generate_explanation(
     payload: ExplanationRequest,
     request: Request,  # Inject actual HTTP Request for headers/client IP (must come before query params with defaults)
     audience: str = Query("investigator", description="Audience mode: 'investigator' (default, full detail) or 'business' (reduced sensitive detail)"),
+    bypass_cache: bool = Query(False, description="Bypass cache and force fresh computation"),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -830,6 +927,7 @@ async def generate_explanation(
       - investigator: Full citations with redacted quotes, detailed key_findings
       - business: Redacted quotes, reduced sensitive phrasing in key_findings
     - Results are cached (TTL=600s) to reduce repeated computation
+    - Set bypass_cache=true to force fresh computation (useful for testing)
     - Rate limited to 30 requests/minute per client IP
 
     The platform operates fully without LLM integration.
@@ -904,8 +1002,23 @@ async def generate_explanation(
         )
         raise HTTPException(status_code=404, detail=f"Risk event not found for user {payload.user_id}")
 
+    # Get user record for account_age and other fields
+    from app.models.database import User
+    user_result = await db.execute(
+        select(User).where(User.user_id == payload.user_id)
+    )
+    user = user_result.scalar_one_or_none()
+
+    # Compute account_age from User.account_created_time
+    account_age = None
+    if user and user.account_created_time:
+        from datetime import datetime, timezone
+        account_age = (datetime.now(timezone.utc) - user.account_created_time).days
+
     # Check cache (before any expensive computation)
-    cache_key = _generate_cache_key(payload.user_id, audience, _safe_dump(RiskEventResponse.model_validate(risk_event).model_dump()))
+    # Generate cache buster if bypass_cache is True
+    cache_buster = str(time.time()) if bypass_cache else ""
+    cache_key = _generate_cache_key(payload.user_id, audience, _safe_dump(RiskEventResponse.model_validate(risk_event).model_dump()), cache_buster)
     cached_response = _explanation_cache.get(cache_key)
     if cached_response is not None:
         # Cache hit - metrics already tracked by cache.get()
@@ -938,54 +1051,14 @@ async def generate_explanation(
     graph_service = GraphAnalysisService(db)
     graph_data = await graph_service.get_user_graph(payload.user_id, depth=1)
 
-    # Build query string for policy search from risk event fields
-    query_parts = []
-    if risk_event.primary_reason:
-        query_parts.append(risk_event.primary_reason)
-    if risk_event.risk_level:
-        query_parts.append(risk_event.risk_level.lower())
-    if risk_event.recommended_action:
-        query_parts.append(risk_event.recommended_action)
-    # Add top factor names
-    for factor in factors[:3]:
-        if factor.factor_name:
-            query_parts.append(factor.factor_name.lower().replace("_", " "))
+    # Determine if graph evidence exists
+    has_graph_evidence = bool(
+        graph_data and
+        graph_data.get('nodes') and
+        len(graph_data['nodes']) > 1  # More than just the user
+    )
 
-    # Default query if no specific data available
-    query = " ".join(query_parts) if query_parts else "high risk investigation recommended actions manual review velocity amount anomaly location mismatch"
-
-    # Search policies via RAG (safe, never throws)
-    citations: List[PolicyCitation] = []
-    try:
-        rag = PolicyRAGService()
-        chunks = rag.search(query, top_k=5)
-
-        # Apply audience-based quote redaction
-        for i, ch in enumerate(chunks):
-            if audience == "business":
-                # Business mode: redact quote entirely
-                sanitized_quote = "[REDACTED]"
-            else:
-                # Investigator mode: apply sanitization with sensitive pattern redaction
-                sanitized_quote = sanitize_policy_quote(ch.text[:400].strip())
-
-            citations.append(
-                PolicyCitation(
-                    id=i + 1,
-                    doc=ch.doc,
-                    section=ch.section,
-                    quote=sanitized_quote,
-                    chunk_id=ch.chunk_id,
-                )
-            )
-    except Exception:
-        # RAG failure: continue with empty citations
-        citations = []
-
-    # Generate citation marks for inline text
-    citation_marks = "".join([f"[{c.id}]" for c in citations[:2]])
-
-    # Generate explanation
+    # Generate explanation first (needed for finding-specific citation retrieval)
     # Default behavior: model-based explanation (no LLM dependency)
     if settings.ENABLE_LLM_EXPLANATION and settings.ANTHROPIC_API_KEY:
         # LLM-enabled: Use LLM service for natural language summaries
@@ -1004,67 +1077,365 @@ async def generate_explanation(
             graph_data=_safe_dump(graph_data),
         )
 
-    # Append citation marks to explanation text fields if citations exist
-    if citation_marks:
-        # Append to summary
-        if isinstance(explanation.get("summary"), str):
-            explanation["summary"] = explanation["summary"].rstrip() + " " + citation_marks
+    # ============================================================
+    # CITATION GENERATION WITH DOMAIN ENFORCEMENT
+    # ============================================================
+    # Uses CitationRetrievalService with strict domain constraints
+    # One primary citation per finding
+    # Citations built ONLY from marks used in text
+    # Domain-specific RAG queries (enforced BEFORE retrieval)
+    # Metadata chunks filtered out
 
-        # Append to key_findings items
-        if isinstance(explanation.get("key_findings"), list):
-            key_findings = explanation["key_findings"]
-            for i, item in enumerate(key_findings):
-                if isinstance(item, str):
-                    key_findings[i] = item.rstrip() + " " + citation_marks
-                elif isinstance(item, dict):
-                    # Handle dict items with text fields
-                    for text_field in ("text", "title", "description"):
-                        if text_field in item and isinstance(item[text_field], str):
-                            item[text_field] = item[text_field].rstrip() + " " + citation_marks
+    key_findings = explanation.get("key_findings", [])
+    # Save original findings BEFORE attaching citation marks
+    # This is needed later for proper citation re-ordering
+    original_key_findings = [f for f in key_findings if isinstance(f, str)]
+    citation_service = create_citation_retrieval_service()
+
+    logger.info(f"Processing {len(key_findings)} key_findings for citation generation")
+
+    # Generate citations with domain enforcement
+    retrieval_result = citation_service.retrieve_citations(
+        key_findings=key_findings,
+        ml_score=risk_event.ml_score,
+        rule_score=risk_event.rule_score,
+        graph_score=risk_event.graph_score,
+        factors=[_safe_dump(f) for f in factors],
+        has_graph_evidence=has_graph_evidence,
+        audience=audience,
+        max_citations=5
+    )
+
+    citations = retrieval_result.citations
+    finding_to_citation = {}
+    for finding_text, ids_list in retrieval_result.finding_to_citations.items():
+        if ids_list:
+            finding_to_citation[finding_text] = ids_list[0]  # Take first ID
+
+    logger.info(f"Generated {len(citations)} citations for {len(key_findings)} findings")
+
+    # Convert Citation objects to dicts for API response
+    citations_dict = []
+    for cit in citations:
+        citations_dict.append({
+            "id": cit.id,
+            "doc": cit.doc,
+            "section": cit.section,
+            "quote": cit.quote,
+            "chunk_id": cit.chunk_id
+        })
+
+    # Attach citation marks to key_findings
+    # Skip citation for score summaries (they are model output metrics, not policy-backed hypotheses)
+    if isinstance(explanation.get("key_findings"), list):
+        key_findings = explanation["key_findings"]
+
+        for i, finding_text in enumerate(key_findings):
+            if isinstance(finding_text, str):
+                # Skip citation attachment for score summaries
+                # Check if the finding starts with any score summary pattern
+                is_score_summary = (
+                    finding_text.startswith("ML Signal Score:") or
+                    finding_text.startswith("Rule Engine Signal Score:") or
+                    finding_text.startswith("Graph Network Signal Score:")
+                )
+
+                if is_score_summary:
+                    logger.info(f"Skipped citation for score summary: '{finding_text}'")
+                    continue
+
+                citation_id = finding_to_citation.get(finding_text)
+
+                if citation_id:
+                    key_findings[i] = finding_text.rstrip() + f" [{citation_id}]"
+                    logger.debug(f"Attached citation [{citation_id}] to finding '{finding_text[:50]}...'")
+                else:
+                    logger.warning(f"No citation for finding: '{finding_text[:50]}...'")
+
+    # ============================================================
+    # CITATION FILTERING
+    # ============================================================
+    # Remove generic citations that should not appear in Policy-backed Narrative
+    # Generic citations to filter:
+    # - Risk_Scoring_Explainability_Guide.md / Explanation Objectives
+    # - AML_Suspicious_Indicators.md / Scope
+    filtered_citations = []
+    removed_ids = set()
+
+    for cit in citations_dict:
+        doc = cit.get("doc", "")
+        section = cit.get("section", "")
+
+        # Filter out generic citations
+        is_generic = False
+        if "Risk_Scoring_Explainability_Guide" in doc and "Explanation Objectives" in section:
+            is_generic = True
+            logger.debug(f"Filtered generic citation: {doc} - {section}")
+        elif "AML_Suspicious_Indicators" in doc and " / 1. Scope" in section:
+            is_generic = True
+            logger.debug(f"Filtered generic citation: {doc} - {section}")
+
+        if not is_generic:
+            filtered_citations.append(cit)
+        else:
+            removed_ids.add(cit["id"])
+
+    # ============================================================
+    # RE-ORDER CITATIONS FOR FRONTEND DISPLAY
+    # ============================================================
+    # Frontend filters out score-related findings from "Top Risk Hypotheses"
+    # Goals:
+    # 1. Citations should be [1], [2], [3]... without gaps in visible content
+    # 2. Citations list should be sorted by ID
+    # 3. Citation IDs assigned by chunk's FIRST appearance order (multiple findings can share same ID)
+
+    def is_score_related_finding(finding_text: str) -> bool:
+        """Check if a finding is score-related (filtered by frontend)."""
+        score_keywords = ['score', 'signal', 'ml ', 'rule ', 'graph ', 'probability', 'threshold']
+        finding_lower = finding_text.lower()
+        # Match the frontend's filterKeyFindings logic
+        return any(keyword in finding_lower for keyword in score_keywords)
+
+    # Build old_to_new_id mapping based on ORDER of chunk's FIRST appearance in visible findings
+    old_to_new_id = {}
+    next_new_id = 1
+    seen_chunks = set()
+
+    # Use original_key_findings (saved before citation marks were attached)
+    for finding_text in original_key_findings:
+        if not isinstance(finding_text, str):
+            continue
+
+        # Only process visible (non-score) findings
+        if is_score_related_finding(finding_text):
+            continue
+
+        # Get the old citation ID (which maps to a citation chunk)
+        old_citation_id = finding_to_citation.get(finding_text)
+        if old_citation_id and old_citation_id not in seen_chunks:
+            # First time we see this citation chunk - assign next sequential ID
+            old_to_new_id[old_citation_id] = next_new_id
+            seen_chunks.add(old_citation_id)
+            next_new_id += 1
+
+    # Filter and renumber citations
+    visible_citations = []
+    for cit in filtered_citations:
+        old_id = cit["id"]
+        if old_id in old_to_new_id:
+            cit["id"] = old_to_new_id[old_id]
+            visible_citations.append(cit)
+
+    # Track the next available ID for SOP citation
+    next_sop_id = next_new_id  # next_new_id was already incremented after last unique chunk
+    filtered_citations = visible_citations
+
+    # Build finding citation references using new IDs
+    updated_finding_to_citation = {}
+    for finding_text in original_key_findings:
+        old_id = finding_to_citation.get(finding_text)
+        if old_id in old_to_new_id:
+            updated_finding_to_citation[finding_text] = old_to_new_id[old_id]
+
+    # Update citation marks in key_findings with new IDs
+    if isinstance(explanation.get("key_findings"), list):
+        key_findings = explanation["key_findings"]
+        for i, finding_text in enumerate(key_findings):
+            if isinstance(finding_text, str):
+                # Remove existing citation marks and re-attach with new IDs
+                import re
+                clean_text = re.sub(r'\s*\[\d+\]$', '', finding_text)
+
+                # Skip citation attachment for score summaries
+                is_score_summary = (
+                    clean_text.startswith("ML Signal Score:") or
+                    clean_text.startswith("Rule Engine Signal Score:") or
+                    clean_text.startswith("Graph Network Signal Score:")
+                )
+
+                new_citation_id = updated_finding_to_citation.get(clean_text)
+                if new_citation_id and not is_score_summary:
+                    key_findings[i] = clean_text.rstrip() + f" [{new_citation_id}]"
+                else:
+                    key_findings[i] = clean_text
 
     # Apply audience-based output shaping for key_findings
     if audience == "business" and isinstance(explanation.get("key_findings"), list):
         key_findings = explanation["key_findings"]
         for i, item in enumerate(key_findings):
             if isinstance(item, str):
-                # Reduce sensitive phrasing for business audience
                 sanitized_item = item
-                # Replace phrases with more generic alternatives
                 replacements = [
                     ("shared devices", "shared access signals"),
                     ("shared IPs", "shared access signals"),
                     ("shared device", "shared access signal"),
                     ("shared IP", "shared access signal"),
                     ("connected to ", "related to "),
-                    # Replace network size numbers
                     (r"connected to \d+ other account", "connected to multiple related accounts"),
                     (r"connected to \d+ additional account", "connected to multiple related accounts"),
                 ]
                 for old, new in replacements:
                     if isinstance(new, str):
                         sanitized_item = sanitized_item.replace(old, new)
-                    else:  # regex pattern
+                    else:
                         import re
                         sanitized_item = re.sub(new[0], new[1], sanitized_item)
                 key_findings[i] = sanitized_item
-            elif isinstance(item, dict):
-                # Handle dict items
-                for text_field in ("text", "title", "description"):
-                    if text_field in item and isinstance(item[text_field], str):
-                        sanitized_text = item[text_field]
-                        replacements = [
-                            ("shared devices", "shared access signals"),
-                            ("shared IPs", "shared access signals"),
-                            ("shared device", "shared access signal"),
-                            ("shared IP", "shared access signal"),
-                            ("connected to ", "related to "),
-                        ]
-                        for old, new in replacements:
-                            sanitized_text = sanitized_text.replace(old, new)
-                        item[text_field] = sanitized_text
 
-    # Add citations to response
-    explanation["citations"] = citations
+    # ============================================================
+    # ADD SOP CITATION FOR ACTIONS
+    # ============================================================
+    # Add Investigation_and_Action_SOP.md citation for recommended_action
+    if filtered_citations and isinstance(explanation.get("recommended_action"), str):
+        # Try to retrieve an SOP citation for the action recommendation
+        try:
+            rag = PolicyRAGService()
+            sop_chunks = rag.search(
+                query="investigation action review procedure",
+                top_k=3,
+                allowed_docs=["Investigation_and_Action_SOP.md"]
+            )
+
+            if sop_chunks:
+                # Find the best SOP chunk that passes validation
+                for chunk in sop_chunks:
+                    chunk_section = chunk.section.lower() if chunk.section else ""
+                    # Skip generic scope/intro sections
+                    if any(keyword in chunk_section for keyword in ["scope", "introduction", "purpose"]):
+                        continue
+
+                    # Sanitize quote
+                    quote = chunk.text[:400].strip()
+                    if audience == "business":
+                        quote = "[REDACTED]"
+                    else:
+                        quote = sanitize_policy_quote(quote)
+
+                    # Add SOP citation with next available ID (pre-calculated as next_sop_id)
+                    sop_citation_id = next_sop_id
+                    sop_citation = {
+                        "id": sop_citation_id,
+                        "doc": chunk.doc,
+                        "section": chunk.section,
+                        "quote": quote,
+                        "chunk_id": chunk.chunk_id
+                    }
+                    filtered_citations.append(sop_citation)
+
+                    # Attach citation marker to recommended_action
+                    if isinstance(explanation.get("recommended_action"), str):
+                        import re
+                        action_text = explanation["recommended_action"]
+                        # Remove any existing citation marks
+                        clean_action = re.sub(r'\s*\[\d+\]$', '', action_text).rstrip()
+                        explanation["recommended_action"] = clean_action + f" [{sop_citation_id}]"
+                        logger.info(f"Attached SOP citation [{sop_citation_id}] to recommended_action")
+
+                    logger.info(f"Added SOP citation for actions: {chunk.doc} - {chunk.section[:50]}...")
+                    break
+        except Exception as e:
+            logger.warning(f"Failed to retrieve SOP citation for actions: {e}")
+
+    # Add citations to response (as dicts) - use filtered list, sorted by ID
+    explanation["citations"] = sorted(filtered_citations, key=lambda c: c["id"])
+
+    # ============================================================
+    # GENERATE MISSING_INFO FROM ACTUAL EVIDENCE GAPS
+    # ============================================================
+    # Delegated to DataQualityService.
+    # This checks evidence availability only.
+    # It does NOT use:
+    # - risk level
+    # - findings
+    # - citations
+    # - policy documents
+    
+    # Check transaction evidence availability
+    has_transactions = False
+
+    try:
+        from app.models.database import Trade
+
+        tx_result = await db.execute(
+            select(Trade)
+            .where(Trade.user_id == payload.user_id)
+            .limit(1)
+        )
+
+        has_transactions = (
+            tx_result.scalar_one_or_none() is not None
+        )
+
+    except Exception:
+        has_transactions = False
+
+    # ============================================================
+    # COLLECT EVIDENCE AVAILABILITY FOR DATA QUALITY CHECK
+    # ============================================================
+
+    # Transaction evidence
+    has_transactions = False
+
+    try:
+        from app.models.database import Trade
+
+        tx_result = await db.execute(
+            select(Trade)
+            .where(Trade.user_id == payload.user_id)
+            .limit(1)
+        )
+
+        has_transactions = (
+            tx_result.scalar_one_or_none() is not None
+        )
+
+    except Exception:
+        has_transactions = False
+
+
+    # Device evidence from database
+    has_device_evidence = False
+
+    try:
+        from app.models.database import Device
+
+        device_result = await db.execute(
+            select(Device)
+            .where(Device.user_id == payload.user_id)
+            .limit(1)
+        )
+
+        has_device_evidence = (
+            device_result.scalar_one_or_none() is not None
+        )
+
+    except Exception:
+        has_device_evidence = False
+
+
+    # Graph device/IP evidence
+    has_graph_device_evidence = False
+
+    if graph_data and graph_data.get("nodes"):
+        for node in graph_data["nodes"]:
+            if node.get("user_id") == payload.user_id:
+                if (
+                    node.get("device_fingerprints")
+                    or node.get("shared_ips")
+                ):
+                    has_graph_device_evidence = True
+                    break
+
+    data_quality_service = create_data_quality_service()
+
+    missing_info = data_quality_service.generate_missing_info(
+        user=user,
+        trades_exist=has_transactions,
+        device_exists=has_device_evidence,
+        graph_device_evidence_exists=has_graph_device_evidence,
+    )
+
+    explanation["missing_info"] = missing_info
 
     # Store in cache for future requests
     _explanation_cache.set(cache_key, explanation)

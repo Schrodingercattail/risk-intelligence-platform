@@ -1762,3 +1762,240 @@ Data Source Consistency:
 - Automatically updates when new data is uploaded
 
 No hardcoded values - all data from backend API responses.
+
+---
+
+## 21. Citation System Contract
+
+### Policy-Backed Citation Generation
+
+The platform implements a sophisticated citation system that grounds risk explanations in internal policy documents.
+
+API:
+
+POST /api/risk/explain
+
+Purpose:
+
+Generate risk explanation with policy-backed citations for each key finding.
+
+Response (citation-related fields):
+
+```json
+{
+  "summary": "This account received a HIGH risk score...",
+  "key_findings": [
+    "Connected to 3 related accounts through shared devices [1]",
+    "Large withdrawal amounts detected [2]",
+    "ML Signal Score: 87.50"
+  ],
+  "citations": [
+    {
+      "id": 1,
+      "doc": "AML_Suspicious_Indicators.md",
+      "section": "Suspicious Activity Patterns / 2. Network Analysis",
+      "quote": "Shared device usage across multiple accounts...",
+      "chunk_id": "aml_network_001"
+    },
+    {
+      "id": 2,
+      "doc": "AML_Suspicious_Indicators.md",
+      "section": "Transaction Patterns / 1. Large Withdrawals",
+      "quote": "Withdrawals exceeding [REDACTED_THRESHOLD]...",
+      "chunk_id": "aml_withdrawal_003"
+    }
+  ]
+}
+```
+
+### Citation System Architecture
+
+**Component Services:**
+
+1. **Policy RAG Service** - Local markdown policy document retrieval
+2. **Citation Policy Router** - Domain enforcement before RAG retrieval
+3. **Citation Registry** - Deduplication and budget control
+4. **Citation Coverage Service** - Validation that every finding has citations
+5. **Citation Validator** - Quality validation with graceful degradation
+
+**Policy Documents:**
+
+- AML_Suspicious_Indicators.md
+- Investigation_and_Action_SOP.md
+- KYC_CDD_Requirements.md
+- Risk_Scoring_Explainability_Guide.md
+
+### Citation Generation Flow
+
+1. **Finding Classification** - Each finding classified by domain (network, transaction, account, ML)
+2. **Domain-Scoped Queries** - RAG queries constrained to relevant policy sections
+3. **Citation Retrieval** - Top-k chunks retrieved from policy documents
+4. **Deduplication** - Duplicate citations removed via registry
+5. **Budget Control** - Maximum 5 citations per explanation
+6. **Validation** - Every finding must have at least one citation
+7. **Attachment** - Citation marks ([1], [2]) attached to findings
+8. **Re-ordering** - Sequential IDs maintained for frontend display
+
+### Audience Modes
+
+**Investigator Mode (default):**
+
+- Full policy quotes with selective redaction
+- Complete device/IP relationship details
+- Full network cluster information
+
+**Business Mode:**
+
+- Redacted policy quotes ([REDACTED])
+- Shared device/IP references replaced with "shared access signals"
+- Connected account counts shown without specific IDs
+
+### Citation Filtering
+
+Generic citations are automatically removed:
+
+- Risk_Scoring_Explainability_Guide.md / Explanation Objectives
+- AML_Suspicious_Indicators.md / Scope sections
+
+Only specific, actionable policy citations appear in final response.
+
+---
+
+## 22. Evidence Completeness Contract
+
+### Missing Information Detection
+
+The system identifies missing investigation inputs after risk detection.
+
+API:
+
+GET /api/risk/explain (includes missing_info field)
+
+Purpose:
+
+Identify investigation readiness gaps.
+
+Response:
+
+```json
+{
+  "missing_info": [
+    "Device fingerprint and IP history",
+    "Customer KYC verification status"
+  ]
+}
+```
+
+### Evidence Completeness Checks
+
+**Checked Evidence Types:**
+
+1. **Account Age** - Requires User.account_created_time
+2. **Transaction History** - Requires at least one Trade record
+3. **Device Evidence** - Requires Device record OR graph device evidence
+4. **KYC Status** - Requires User.kyc_level field
+
+### Engineering Design
+
+This service (`data_quality_service.py`) checks evidence availability only.
+
+It does NOT use:
+- Risk level
+- Findings
+- Citations
+- Policy documents
+
+**Value Proposition:**
+
+Separates detection capability from investigation readiness. A high-risk alert may be technically correct but practically unactionable without supporting evidence.
+
+### Frontend Display
+
+Investigation page - "Missing Information" panel:
+
+- Lists each missing evidence type
+- Helps analysts identify investigation blockers
+- Informs data quality improvement efforts
+
+---
+
+## 23. Performance & Monitoring Contract
+
+### Explanation Metrics
+
+API:
+
+GET /api/risk/metrics/explain
+
+Purpose:
+
+Expose performance and reliability metrics for explanation endpoint.
+
+Response:
+
+```json
+{
+  "requests_total": 1250,
+  "success_total": 1180,
+  "error_total": 70,
+  "rate_limited_total": 15,
+  "cache_hit_rate": 0.68,
+  "cache_hit_total": 850,
+  "cache_miss_total": 400,
+  "fallback_rate": 0.12,
+  "fallback_total": 150,
+  "llm_total": 1000,
+  "latency_ms_p50": 245,
+  "latency_ms_p95": 512,
+  "latency_ms_avg": 312
+}
+```
+
+### Cache Configuration
+
+Environment variables:
+
+```bash
+EXPLAIN_CACHE_TTL_SECONDS=600      # Cache TTL (default: 10 minutes)
+EXPLAIN_CACHE_MAX_SIZE=1024        # Max cache entries
+EXPLAIN_RATE_LIMIT_PER_MIN=30      # Rate limit per client IP
+EXPLAIN_LLM_TIMEOUT_SECONDS=5      # LLM API timeout
+```
+
+### Cache Behavior
+
+**Cache Key Components:**
+
+- user_id
+- audience (investigator/business)
+- pipeline_run_id
+- model_version
+- policy_version (derived from policy file mtimes)
+- cache_buster (when bypass_cache=true)
+
+**Cache Statistics:**
+
+- Hit rate: (cache_hits / total_requests)
+- Fallback rate: (fallback_requests / total_requests)
+- Latency tracked via rolling window (N=1000)
+
+### Privacy Controls
+
+Environment variables:
+
+```bash
+SHOW_USER_ID_IN_LLM_PROMPT=false  # Control user ID exposure to LLM
+LOG_REDACT_USER_ID=true           # Control user ID in logs
+```
+
+**Redaction Patterns:**
+
+- IP addresses → [REDACTED_IP]
+- Email addresses → [REDACTED_EMAIL]
+- Phone numbers → [REDACTED_PHONE]
+- Long IDs → [REDACTED_ID]
+- Thresholds/percentages → [REDACTED_THRESHOLD]
+
+---
+
+No hardcoded values - all data from backend API responses.

@@ -194,7 +194,7 @@ export default function DataPipeline() {
   const getUploadedDatasetInfo = (key: string) => {
     if (!pipelineStatus?.upload_counts) return null;
     const count = pipelineStatus.upload_counts[key as keyof typeof pipelineStatus.upload_counts];
-    if (!count) return null;
+    if (count === undefined || count === null) return null;  // Allow 0 records as valid upload
 
     return {
       name: `${key.charAt(0).toUpperCase() + key.slice(1)}.csv`,
@@ -269,8 +269,21 @@ export default function DataPipeline() {
                   // Show uploaded info from backend
                   <div className="space-y-1 text-xs text-slate-600 mt-auto">
                     <div className="font-medium">{uploadedInfo.name}</div>
-                    <div className="text-slate-500">{uploadedInfo.records?.toLocaleString()} records</div>
-                    {uploadedInfo.uploadedAt && (
+                    <div className="text-slate-500">
+                      {uploadedInfo.records === 0
+                        ? 'Empty dataset'
+                        : `${uploadedInfo.records?.toLocaleString()} records`
+                      }
+                    </div>
+                    {uploadedInfo.records === 0 && (
+                      <div className="text-amber-600 mt-1">
+                        {dataset.key === 'devices' && '⚠️ No device evidence available - device relationship analysis unavailable'}
+                        {dataset.key === 'trades' && '⚠️ No transaction evidence available - trading analysis unavailable'}
+                        {dataset.key === 'withdrawals' && '⚠️ No withdrawal evidence available - withdrawal analysis unavailable'}
+                        {dataset.key === 'users' && '⚠️ No user evidence available - account analysis unavailable'}
+                      </div>
+                    )}
+                    {uploadedInfo.uploadedAt && uploadedInfo.records > 0 && (
                       <div className="text-slate-500">{formatTimestamp(uploadedInfo.uploadedAt)}</div>
                     )}
                   </div>

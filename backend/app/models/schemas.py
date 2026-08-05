@@ -295,6 +295,7 @@ class PipelineStatusResponse(BaseModel):
     upload_status: str = "PENDING"  # PENDING, COMPLETED, FAILED
     upload_timestamp: Optional[str] = None
     upload_counts: Optional[Dict[str, int]] = None  # users, devices, trades, withdrawals
+    upload_warnings: Optional[List[str]] = None  # Warnings for empty datasets
 
     # Pipeline stages
     data_sources: str = "PENDING"
@@ -384,6 +385,7 @@ class ExplanationResponse(BaseModel):
     citations: List[PolicyCitation] = []
     explanation_source: str = "MODEL_FALLBACK"  # "LLM" or "MODEL_FALLBACK"
     llm_error: Optional[str] = None  # Short error message for LLM failures (not shown to users by default)
+    missing_info: List[str] = []  # Evidence gaps - actual unavailable fields in case data
 
 
 # ============================================================

@@ -18,7 +18,7 @@ The platform implements a complete risk detection pipeline from data ingestion t
 
 ### 1. Risk Overview
 
-**Risk Command Center** — Executive dashboard with detection intelligence, risk distribution, and investigation queue metrics
+**Risk Overview** — Executive dashboard with detection intelligence, risk distribution, and investigation queue metrics
 
 ![Risk Overview](docs/screenshots/risk-overview.png)
 

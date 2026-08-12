@@ -198,7 +198,7 @@ Max tokens parameter in LLM API call:
 ```python
 # backend/app/services/llm_service.py:224-232
 message = self.client.messages.create(
-    model=settings.LLM_MODEL,
+    model=settings.ANTHROPIC_MODEL,
     max_tokens=settings.LLM_MAX_TOKENS,
     ...
 )
@@ -232,7 +232,8 @@ ENABLE_LLM_EXPLANATION: bool = False          # LLM on/off
 ANTHROPIC_API_KEY: str = ""                  # API credential
 
 # LLM Model Settings
-LLM_MODEL: str = "claude-3-5-sonnet-20241022"
+# Model selection is controlled through ANTHROPIC_MODEL.When using an Anthropic-compatible gateway (e.g. Zhipu GLM),the model id should match the gateway provider's model naming.
+ANTHROPIC_MODEL: str = "claude-3-5-sonnet-latest"
 LLM_MAX_TOKENS: int = 2000                   # Response size limit
 LLM_TEMPERATURE: float = 0.3                 # Response randomness
 

@@ -236,7 +236,7 @@ class ClaudeProvider(LLMProvider):
     ) -> str:
         """Generate explanation using Claude API."""
         message = self.client.messages.create(
-            model=settings.ANTHROPIC_MODEL or settings.LLM_MODEL,
+            model=settings.ANTHROPIC_MODEL,
             max_tokens=settings.LLM_MAX_TOKENS,
             temperature=settings.LLM_TEMPERATURE,
             system=system_prompt or self._default_system_prompt(),

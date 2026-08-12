@@ -46,9 +46,7 @@ class Settings(BaseSettings):
     # ANTHROPIC_MODEL: Model id passed to messages.create().
     # Use a Claude model id for the official endpoint, or a provider-specific id
     # (e.g. glm-5.2) when ANTHROPIC_BASE_URL points at a compatible gateway.
-    # Falls back to LLM_MODEL below when left empty (backward compatibility).
     ANTHROPIC_MODEL: str = "claude-3-5-sonnet-latest"
-    LLM_MODEL: str = "claude-3-5-sonnet-20241022"
     LLM_MAX_TOKENS: int = 2000
     LLM_TEMPERATURE: float = 0.3
     # SHOW_USER_ID_IN_LLM_PROMPT: Control whether user_id is sent to LLM

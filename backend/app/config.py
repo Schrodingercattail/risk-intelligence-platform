@@ -37,6 +37,17 @@ class Settings(BaseSettings):
     # When true: Requires ANTHROPIC_API_KEY to be set
     ENABLE_LLM_EXPLANATION: bool = False
     ANTHROPIC_API_KEY: str = ""
+    # ANTHROPIC_BASE_URL: Optional override for the Anthropic API endpoint.
+    # Empty (default) -> use the official Anthropic endpoint (https://api.anthropic.com).
+    # Set this to route calls through an Anthropic-compatible gateway while keeping
+    # the anthropic SDK unchanged, e.g. the Zhipu GLM gateway:
+    #   https://open.bigmodel.cn/api/anthropic
+    ANTHROPIC_BASE_URL: str = ""
+    # ANTHROPIC_MODEL: Model id passed to messages.create().
+    # Use a Claude model id for the official endpoint, or a provider-specific id
+    # (e.g. glm-5.2) when ANTHROPIC_BASE_URL points at a compatible gateway.
+    # Falls back to LLM_MODEL below when left empty (backward compatibility).
+    ANTHROPIC_MODEL: str = "claude-3-5-sonnet-latest"
     LLM_MODEL: str = "claude-3-5-sonnet-20241022"
     LLM_MAX_TOKENS: int = 2000
     LLM_TEMPERATURE: float = 0.3

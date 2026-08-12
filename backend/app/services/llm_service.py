@@ -15,6 +15,7 @@ import os
 import re
 import asyncio
 import logging
+logger = logging.getLogger(__name__)
 
 from anthropic import Anthropic
 
@@ -209,11 +210,24 @@ class LLMProvider(ABC):
 class ClaudeProvider(LLMProvider):
     """Claude API implementation."""
 
-    def __init__(self, api_key: str):
-        """Initialize Claude client."""
+    def __init__(self, api_key: str, base_url: Optional[str] = None):
+        """Initialize Claude client.
+
+        Args:
+            api_key: Anthropic API key (or gateway API key).
+            base_url: Optional API endpoint override. If provided (or if
+                settings.ANTHROPIC_BASE_URL is set), requests are routed to that
+                Anthropic-compatible gateway (e.g. the Zhipu GLM gateway).
+                If empty/None, the official Anthropic endpoint is used.
+        """
         if not api_key:
             raise ValueError("ANTHROPIC_API_KEY must be set")
-        self.client = Anthropic(api_key=api_key)
+        # Resolve base_url: explicit arg -> settings -> None (official default)
+        resolved_base_url = base_url or settings.ANTHROPIC_BASE_URL or None
+        if resolved_base_url:
+            self.client = Anthropic(api_key=api_key, base_url=resolved_base_url)
+        else:
+            self.client = Anthropic(api_key=api_key)
 
     async def generate_explanation(
         self,
@@ -222,7 +236,7 @@ class ClaudeProvider(LLMProvider):
     ) -> str:
         """Generate explanation using Claude API."""
         message = self.client.messages.create(
-            model=settings.LLM_MODEL,
+            model=settings.ANTHROPIC_MODEL or settings.LLM_MODEL,
             max_tokens=settings.LLM_MAX_TOKENS,
             temperature=settings.LLM_TEMPERATURE,
             system=system_prompt or self._default_system_prompt(),
@@ -352,6 +366,7 @@ class LLMExplanationService:
 
             # Return model-based explanation with MODEL_FALLBACK source and short error
             short_error = "LLM generation failed" if "timeout" in str(e).lower() else "LLM provider error"
+            logger.exception("LLM provider call failed")   # 会打印完整 traceback
             return self._model_based_explanation(
                 risk_event, risk_factors, explanation_source="MODEL_FALLBACK", llm_error=short_error
             )

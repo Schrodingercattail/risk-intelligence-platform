@@ -8,6 +8,28 @@ This dataset is designed for **product demonstration** of the Risk Intelligence 
 
 ---
 
+## ⚠️ `risk_analysis_results.csv` is a NON-AUTHORITATIVE snapshot — do not use as ground truth
+
+`risk_analysis_results.csv` is a **frozen, one-time export** (dated 2026-07-21 in the
+companion `CRITICAL_OVERRIDE_VERIFICATION_SUMMARY.md`), produced by a "Critical Override
+Verification Script" that is **no longer in the repository**. No current script
+regenerates it.
+
+Its `graph_score` / `final_score` (and occasionally `ml_score`) **diverge from the
+authoritative values in the live database**. Why: the runtime pipeline
+(`risk_service._calculate_graph_score`) recomputes `graph_score` on every run from the
+live cluster state (`AccountCluster.risk_score`, `member_count`, hub role), and
+`final_score = 0.5·ml + 0.3·rule + 0.2·graph` inherits that drift. The snapshot even
+disagrees with its own companion summary (which reports graph 88–92 for ring members
+while the CSV shows ~57–60) and with the "expected score ranges" in this README.
+
+**The only authoritative source of risk scores is the live database table `risk_events`**
+— the same values the frontend displays and `/api/risk/explain` feeds to the LLM. Use
+those, not this file, for any evaluation, verification, or comparison. See also the
+companion warning `risk_analysis_results.NON_AUTHORITATIVE.md`.
+
+---
+
 ## Dataset Overview
 
 | File | Records | Description |
@@ -16,6 +38,7 @@ This dataset is designed for **product demonstration** of the Risk Intelligence 
 | `devices.csv` | 2,000 | Device and login information |
 | `trades.csv` | 82,051 | Trading transactions |
 | `withdrawals.csv` | 6,687 | Withdrawal transactions |
+| `risk_analysis_results.csv` | 2,000 | ⚠️ **Non-authoritative** one-time score export — see warning above. Do NOT use as ground truth; use live DB `risk_events`. |
 
 ---
 

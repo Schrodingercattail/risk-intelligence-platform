@@ -86,3 +86,6 @@ MEMORY.md
 
 # Pytest
 .pytest_cache/
+
+# Generated LLM evaluation outputs
+eval/llm_raw_explanations/

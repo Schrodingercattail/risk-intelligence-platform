@@ -274,8 +274,9 @@ export default function Investigation() {
     try {
       setLoadingExplanation(true);
       setExplanationError(null);
-      // Use bypassCache=true to get fresh citations (temporarily for testing)
-      const explanationData = await riskApi.generateExplanation(userId, true);
+      // Use cached explanations in the investigation workflow.
+      // Evaluation scripts can bypass cache when testing fresh generation.
+      const explanationData = await riskApi.generateExplanation(userId, false);
       console.log('=== Explanation Debug ===');
       console.log('Total citations:', explanationData?.citations?.length);
       console.log('Citation IDs:', explanationData?.citations?.map((c: any) => c.id));

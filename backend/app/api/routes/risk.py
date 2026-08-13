@@ -70,6 +70,50 @@ def _safe_record_latency(metrics, latency_ms: float) -> None:
         logger.warning(f"Failed to record latency: {e}")
 
 
+def _record_explanation_source_metrics(metrics, explanation: dict) -> tuple[str, bool]:
+    """
+    Record explanation-source and fallback counters for a freshly-computed
+    (non-cached) explanation, and return the values used for logging.
+
+    Called exactly once per UNCACHED /api/risk/explain request, after the
+    explanation is generated. Cache-hit responses skip this so the source and
+    fallback totals are never double-counted for a single logical explanation.
+
+    Counting matrix (exactly one branch per request, no double counting):
+
+        LLM enabled | explanation_source | counters incremented
+        ------------+---------------------+-------------------------------------
+        No          | MODEL_FALLBACK      | llm_disabled_total, fallback_total
+        Yes         | LLM                 | llm_total
+        Yes         | MODEL_FALLBACK      | llm_failed_total, fallback_total
+
+    What counts as a fallback: any response served by the model-based
+    explanation - either because the LLM is disabled / has no API key
+    (model-based by default) or because the LLM was attempted but failed or
+    timed out. A successful LLM response is never a fallback.
+
+    Note: increment_llm_disabled / increment_llm_failed each bump fallback_total
+    internally (see ExplainMetrics); increment_llm does not. This helper is the
+    only call site, so exactly one counter path runs per request.
+
+    Returns:
+        (explanation_source, fallback_used)
+    """
+    explanation_source = explanation.get("explanation_source", "MODEL_FALLBACK")
+    llm_was_enabled = bool(settings.ENABLE_LLM_EXPLANATION and settings.ANTHROPIC_API_KEY)
+
+    if llm_was_enabled:
+        if explanation_source == "LLM":
+            _safe_increment_metrics(metrics, "increment_llm")
+        else:
+            _safe_increment_metrics(metrics, "increment_llm_failed")
+    else:
+        _safe_increment_metrics(metrics, "increment_llm_disabled")
+
+    fallback_used = explanation_source == "MODEL_FALLBACK"
+    return explanation_source, fallback_used
+
+
 # ============================================================
 # In-Memory Cache for Explanation Results
 # ============================================================
@@ -1445,25 +1489,11 @@ async def generate_explanation(
     _safe_record_latency(metrics, latency_ms)
     _safe_increment_metrics(metrics, "increment_success")
 
-    # Track explanation source metrics
-    # Distinguish between: LLM disabled, LLM failed, LLM success
-    explanation_source = explanation.get("explanation_source", "MODEL_FALLBACK")
-    llm_was_enabled = settings.ENABLE_LLM_EXPLANATION and settings.ANTHROPIC_API_KEY
-
-    if llm_was_enabled:
-        if explanation_source == "LLM":
-            # LLM was enabled and succeeded
-            _safe_increment_metrics(metrics, "increment_llm")
-        else:
-            # LLM was enabled but failed/timeout (explanation_source = MODEL_FALLBACK)
-            _safe_increment_metrics(metrics, "increment_llm_failed")
-    else:
-        # LLM was disabled or no API key (model-based by default)
-        _safe_increment_metrics(metrics, "increment_llm_disabled")
+    # Track explanation source / fallback counters (single call site, no double
+    # counting). Cache-hit responses skip this so each explanation is counted once.
+    explanation_source, fallback_used = _record_explanation_source_metrics(metrics, explanation)
 
     # Log structured JSON
-    # fallback_used is true if explanation came from model-based (either disabled or failed)
-    fallback_used = (explanation_source == "MODEL_FALLBACK")
     log_explain_request(
         status_code=200,
         latency_ms=latency_ms,

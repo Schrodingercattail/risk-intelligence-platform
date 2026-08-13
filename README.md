@@ -560,11 +560,41 @@ EXPLAIN_LLM_TIMEOUT_SECONDS=5      # LLM API timeout
 
 ### Observability Metrics
 
-The `/api/risk/metrics/explain` endpoint tracks:
-- Cache hit rate
-- Fallback rate (LLM disabled, LLM failed, LLM success)
-- Latency percentiles (p50, p95, avg)
-- Request counters
+The `/api/risk/metrics/explain` endpoint exposes in-memory counters for the
+`/api/risk/explain` endpoint. Counters are per-worker and reset on process
+restart; for distributed deployments use Prometheus / an APM instead.
+
+**Cache hit/miss tracking** — recorded on every cache lookup inside
+`ExplanationCache.get()`:
+- `cache_hit_total` — lookup found a valid (non-expired) entry; the stored
+  response is returned and the explanation is **not** regenerated.
+- `cache_miss_total` — lookup missed (key absent or TTL expired).
+- `cache_hit_rate` = `cache_hit_total / (cache_hit_total + cache_miss_total)`.
+
+Because cache hits skip regeneration, they do not re-enter the LLM/fallback
+tallies — each logical explanation is counted once.
+
+**LLM success tracking:**
+- `llm_total` — explanations produced by a successful LLM call
+  (`explanation_source == "LLM"`).
+
+**Fallback tracking** — a request counts as a fallback whenever the
+deterministic model-based explanation is used. `fallback_total` is the sum of
+two mutually exclusive paths:
+- `llm_disabled_total` — LLM was disabled (or no `ANTHROPIC_API_KEY`), so the
+  model-based explanation is used by default.
+- `llm_failed_total` — LLM was enabled but the call failed or timed out
+  (`EXPLAIN_LLM_TIMEOUT_SECONDS`), so it fell back to model-based.
+
+A successful LLM response is **never** a fallback, so `llm_total` and
+`fallback_total` are independent. Each uncached request increments exactly one
+of `llm_total` / `llm_disabled_total` / `llm_failed_total` (no double counting),
+and the latter two each also increment `fallback_total`.
+`fallback_rate` = `fallback_total / requests_total`.
+
+**Other counters:** `requests_total`, `success_total`, `error_total`,
+`rate_limited_total`, and latency percentiles over a rolling window
+(`latency_ms_p50`, `latency_ms_p95`, `latency_ms_avg`).
 
 ### Engineering Trade-offs
 

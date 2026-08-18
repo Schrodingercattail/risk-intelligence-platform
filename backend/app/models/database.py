@@ -6,6 +6,7 @@ These models represent the core data structure of the risk platform.
 """
 from sqlalchemy import (
     Column, String, Integer, Numeric, Boolean, DateTime, Text, ForeignKey, Index, Enum,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -226,6 +227,52 @@ class Case(Base):
 
     # Relationships
     user = relationship("User", back_populates="cases")
+
+
+class CaseExplanation(Base):
+    """
+    Persisted canonical explanation artifact for a case.
+
+    An explanation is a case ARTIFACT, not a transient cached response: it is
+    generated once per (user, audience) and then served stably until an explicit
+    regeneration or a data-change invalidation. The in-memory TTL cache is a
+    read-through performance layer only — cache expiry never triggers a new LLM
+    generation.
+
+    Validity: a stored row is current iff its version_fingerprint matches the
+    fingerprint computed from the CURRENT risk event (see
+    app/services/explanation_store_service.compute_explanation_fingerprint).
+    A new pipeline run / model version / policy edit changes the fingerprint,
+    making the stored explanation stale; the next normal read regenerates.
+
+    One current row per (user_id, audience): regeneration replaces the row.
+    """
+    __tablename__ = "case_explanations"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(50), ForeignKey("users.user_id"), nullable=False)
+    audience = Column(String(20), nullable=False)  # investigator | business
+
+    # Case identity + version inputs the explanation was generated against
+    risk_event_id = Column(Integer, ForeignKey("risk_events.id"), nullable=True)
+    pipeline_run_id = Column(String(50), nullable=True)
+    model_version = Column(String(20), nullable=True)
+    policy_version = Column(String(50), nullable=True)
+
+    # sha256 of the version inputs — the deterministic validity key
+    version_fingerprint = Column(String(64), nullable=False)
+
+    # Full ExplanationResponse-compatible payload, stored as a JSON string
+    explanation_payload = Column(Text, nullable=False)
+    explanation_source = Column(String(20), nullable=False)  # LLM | MODEL_FALLBACK
+    model_provider = Column(String(50), nullable=True)       # e.g. ANTHROPIC_MODEL, "replay"
+
+    generated_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "audience", name="uq_case_explanations_user_audience"),
+        Index("idx_case_explanations_user", "user_id"),
+    )
 
 
 # ============================================================

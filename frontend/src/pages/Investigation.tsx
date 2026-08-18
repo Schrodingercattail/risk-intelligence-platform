@@ -9,6 +9,7 @@
  */
 import { useState, useEffect } from 'react';
 import { riskApi, PolicyCitation, Explanation } from '../services/api';
+import { groupKeyFindings, splitNumberedSteps, splitBoldSegments } from '../utils/explanationFormat';
 
 // Simple tooltip component
 function Tooltip({ content, children }: { content: string; children: React.ReactNode }) {
@@ -73,14 +74,26 @@ function CitationModal({ citation, onClose }: { citation: PolicyCitation | null;
   );
 }
 
-// Helper to render text with clickable citations
+// Helper to render text with clickable citations and markdown emphasis.
+// Citation markers "[n]" become clickable buttons exactly where they appear;
+// paired "**...**" renders as bold and orphan "**" markers are dropped so no
+// stray asterisks display. No other text is altered.
 function renderTextWithCitations(
   text: string,
   citations: PolicyCitation[],
   onCitationClick: (citation: PolicyCitation) => void
 ) {
+  const renderTextPart = (part: string, key: number) =>
+    splitBoldSegments(part).map((segment, segIdx) =>
+      segment.bold ? (
+        <strong key={`${key}-${segIdx}`} className="font-semibold">{segment.text}</strong>
+      ) : (
+        <span key={`${key}-${segIdx}`}>{segment.text}</span>
+      )
+    );
+
   if (!citations || citations.length === 0) {
-    return <span>{text}</span>;
+    return <>{renderTextPart(text, 0)}</>;
   }
 
   // Split text by citation patterns like [1], [2], etc.
@@ -105,33 +118,10 @@ function renderTextWithCitations(
             );
           }
         }
-        return <span key={idx}>{part}</span>;
+        return <span key={idx}>{renderTextPart(part, idx)}</span>;
       })}
     </>
   );
-}
-
-// Check if a finding is score-related (for filtering in Policy-backed Narrative)
-function isScoreRelatedFinding(finding: string): boolean {
-  const scoreKeywords = ['score', 'signal', 'ml ', 'rule ', 'graph ', 'probability', 'threshold'];
-  const lowerFinding = finding.toLowerCase();
-  return scoreKeywords.some(keyword => lowerFinding.includes(keyword));
-}
-
-// Filter findings to prioritize non-score content for Policy-backed Narrative
-function filterKeyFindings(findings: string[]): { nonScoreFindings: string[]; scoreFindings: string[] } {
-  const nonScoreFindings: string[] = [];
-  const scoreFindings: string[] = [];
-
-  findings.forEach(finding => {
-    if (isScoreRelatedFinding(finding)) {
-      scoreFindings.push(finding);
-    } else {
-      nonScoreFindings.push(finding);
-    }
-  });
-
-  return { nonScoreFindings, scoreFindings };
 }
 
 interface InvestigationCase {
@@ -233,6 +223,8 @@ export default function Investigation() {
   const [explanation, setExplanation] = useState<Explanation | null>(null);
   const [loadingExplanation, setLoadingExplanation] = useState(false);
   const [explanationError, setExplanationError] = useState<string | null>(null);
+  const [regenerating, setRegenerating] = useState(false);
+  const [regenerateError, setRegenerateError] = useState<string | null>(null);
   const [selectedCitation, setSelectedCitation] = useState<PolicyCitation | null>(null);
   const [activeTab, setActiveTab] = useState<'evidence' | 'policy'>('evidence');
 
@@ -290,6 +282,28 @@ export default function Investigation() {
     }
   };
 
+  // Explicit regeneration: generates a NEW explanation from the current
+  // canonical evidence / policy context and persists it as the canonical
+  // artifact. Explanation-level operation only — the risk event's
+  // risk_score / ml / rule / graph scores and risk level are NOT
+  // recalculated. On failure the currently displayed (persisted)
+  // explanation is preserved.
+  const regenerateExplanation = async () => {
+    if (!selectedCase || regenerating) return;
+    try {
+      setRegenerating(true);
+      setRegenerateError(null);
+      const fresh = await riskApi.regenerateExplanation(selectedCase.user_id);
+      setExplanation(fresh);
+      setSelectedCitation(null);
+    } catch (err) {
+      console.error('Failed to regenerate explanation:', err);
+      setRegenerateError('Failed to regenerate the explanation. The current explanation is unchanged.');
+    } finally {
+      setRegenerating(false);
+    }
+  };
+
   // Fetch case evidence for a selected case
   const fetchCaseEvidence = async (userId: string) => {
     try {
@@ -339,6 +353,7 @@ export default function Investigation() {
     setDisplayedTransactionCount(3); // Reset to show top 3 transactions initially
     setDisplayedNetworkCount(3); // Reset to show top 3 network connections initially
     setExpandedNetworkAccounts(new Set()); // Reset expanded accounts
+    setRegenerateError(null); // Reset per-case regeneration error
     fetchCaseDetail(caseItem); // Fetch details in background
     fetchCaseEvidence(caseItem.user_id); // Fetch evidence in background
     fetchNetworkSignals(caseItem.user_id, true); // Fetch network signals in background (initial load)
@@ -671,20 +686,40 @@ export default function Investigation() {
                       Evidence-based explanation with optional policy-backed narrative (read-only).
                     </p>
                   </div>
-                  {/* Source Badge */}
+                  {/* Source Badge + Explicit Regeneration */}
                   {explanation && activeTab === 'policy' && (
-                    <div className="flex items-center gap-2">
-                      <span className={`px-2 py-1 text-xs font-medium rounded ${
-                        explanation.explanation_source === 'LLM'
-                          ? 'bg-purple-100 text-purple-700 border border-purple-200'
-                          : 'bg-slate-100 text-slate-600 border border-slate-200'
-                      }`}>
-                        Source: {explanation.explanation_source === 'LLM' ? 'LLM' : 'Model (Fallback)'}
-                      </span>
-                      {explanation.llm_error && (
-                        <span className="text-amber-500" title={explanation.llm_error}>
-                          ⚠
+                    <div className="flex flex-col items-end gap-1">
+                      <div className="flex items-center gap-2">
+                        <span className={`px-2 py-1 text-xs font-medium rounded ${
+                          explanation.explanation_source === 'LLM'
+                            ? 'bg-purple-100 text-purple-700 border border-purple-200'
+                            : 'bg-slate-100 text-slate-600 border border-slate-200'
+                        }`}>
+                          Source: {explanation.explanation_source === 'LLM' ? 'LLM' : 'Model (Fallback)'}
                         </span>
+                        {explanation.llm_error && (
+                          <span className="text-amber-500" title={explanation.llm_error}>
+                            ⚠
+                          </span>
+                        )}
+                        <button
+                          onClick={regenerateExplanation}
+                          disabled={regenerating || loadingExplanation}
+                          title="Generate a new explanation from the current evidence and policy context"
+                          className={`px-3 py-1 text-xs font-medium rounded border transition-colors ${
+                            regenerating || loadingExplanation
+                              ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
+                              : 'bg-white text-purple-700 border-purple-300 hover:bg-purple-50'
+                          }`}
+                        >
+                          {regenerating ? 'Regenerating…' : 'Regenerate with LLM'}
+                        </button>
+                      </div>
+                      <span className="text-[11px] text-slate-400">
+                        Regenerates the explanation only; risk scores are not recalculated.
+                      </span>
+                      {regenerateError && (
+                        <span className="text-[11px] text-red-600">{regenerateError}</span>
                       )}
                     </div>
                   )}
@@ -775,34 +810,32 @@ export default function Investigation() {
                         {/* B. Top risk hypotheses */}
                         {explanation.key_findings && explanation.key_findings.length > 0 && (
                           <div>
-                            <h4 className="text-xs font-semibold text-slate-700 mb-2">Top Risk Hypotheses</h4>
-                            <ul className="space-y-2">
-                              {(() => {
-                                const { nonScoreFindings, scoreFindings } = filterKeyFindings(explanation.key_findings);
-
-                                // Show non-score findings first
-                                const displayFindings = nonScoreFindings.length > 0
-                                  ? nonScoreFindings
-                                  : explanation.key_findings.slice(0, 2);
-
-                                return (
-                                  <>
-                                    {displayFindings.map((finding, index) => (
-                                      <li key={index} className="text-sm text-slate-600 flex items-start gap-2">
-                                        <span className="text-blue-600 font-medium flex-shrink-0">{index + 1}.</span>
-                                        <span className="flex-1">
-                                          {renderTextWithCitations(finding, explanation.citations, setSelectedCitation)}
-                                        </span>
-                                      </li>
-                                    ))}
-                                    {scoreFindings.length > 0 && nonScoreFindings.length > 0 && (
-                                      <li className="text-xs text-slate-500 italic mt-2">
-                                        See Evidence tab for detailed score breakdown.
-                                      </li>
+                            <h4 className="text-xs font-semibold text-slate-700 mb-2">Key Risk Findings</h4>
+                            {/* key_findings is string[] (API contract), but the LLM may use
+                                several elements to compose ONE conceptual finding: a numbered
+                                header line ("1. ...") followed by supporting lines. Group on
+                                that structural marker; render every element verbatim in order;
+                                never invent numbering (numbered titles carry their own) and
+                                never drop or re-order elements. Citation markers stay attached
+                                to the exact line where they appear. */}
+                            <ul className="space-y-3">
+                              {groupKeyFindings(explanation.key_findings).map((group, index) => (
+                                <li key={index}>
+                                  <div className="text-sm text-slate-700 font-medium flex items-start gap-2">
+                                    {!group.numbered && (
+                                      <span className="text-blue-600 font-medium flex-shrink-0">•</span>
                                     )}
-                                  </>
-                                );
-                              })()}
+                                    <span className="flex-1">
+                                      {renderTextWithCitations(group.title, explanation.citations, setSelectedCitation)}
+                                    </span>
+                                  </div>
+                                  {group.lines.map((line, lineIndex) => (
+                                    <div key={lineIndex} className="text-sm text-slate-600 mt-1 pl-4">
+                                      {renderTextWithCitations(line, explanation.citations, setSelectedCitation)}
+                                    </div>
+                                  ))}
+                                </li>
+                              ))}
                             </ul>
                           </div>
                         )}
@@ -811,14 +844,34 @@ export default function Investigation() {
                         {explanation.recommended_action && (
                           <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
                             <h4 className="text-xs font-semibold text-blue-900 mb-2">Next Actions (SOP-aligned)</h4>
-                            <p className="text-sm text-blue-800 mb-2">
-                              {renderTextWithCitations(explanation.recommended_action, explanation.citations, setSelectedCitation)}
-                            </p>
-                            <ul className="space-y-1 text-xs text-blue-700">
-                              <li>• Manual review of account activity and relationships</li>
-                              <li>• Request additional account context if needed</li>
-                              <li>• Enhanced due diligence for high-risk cases</li>
-                            </ul>
+                            {/* The LLM may pack numbered action steps ("1. ... 2. ...") into a
+                                single string — occasionally even continuing the findings count
+                                ("10. ..."). splitNumberedSteps strips any model numbering; the
+                                UI numbers steps from 1 in the actions' own scope, independent
+                                of the Key Risk Findings numbering. Un-numbered actions
+                                (deterministic fallback) render as one paragraph, as before. */}
+                            {(() => {
+                              const steps = splitNumberedSteps(explanation.recommended_action);
+                              if (steps.length > 1) {
+                                return (
+                                  <ul className="space-y-2 mb-2">
+                                    {steps.map((step, index) => (
+                                      <li key={index} className="text-sm text-blue-800 flex items-start gap-2">
+                                        <span className="text-blue-600 font-medium flex-shrink-0">{index + 1}.</span>
+                                        <span className="flex-1">
+                                          {renderTextWithCitations(step, explanation.citations, setSelectedCitation)}
+                                        </span>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                );
+                              }
+                              return (
+                                <p className="text-sm text-blue-800 mb-2">
+                                  {renderTextWithCitations(steps[0] ?? explanation.recommended_action, explanation.citations, setSelectedCitation)}
+                                </p>
+                              );
+                            })()}
                             <p className="text-xs text-blue-600 italic mt-2">
                               These recommendations are non-automated; final decision by the reviewing analyst.
                             </p>

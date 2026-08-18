@@ -61,6 +61,105 @@ class RetrievalResult:
     is_valid: bool
 
 
+class ClaimRefiner:
+    """
+    Refines a finding's DOMAIN type into a CLAIM-specific scope.
+
+    A citation must support what the finding actually CLAIMS, not merely share
+    a domain. Two findings in the same domain can make different claims with
+    different policy support: "High withdrawal frequency" claims a velocity /
+    count anomaly (supported by AML 2.1 High-Velocity Transfers), while
+    "First withdrawal to new address" claims a FIRST-time / new-destination
+    event — which the current policy corpus does NOT address. The latter must
+    therefore receive NO citation rather than a velocity citation that does
+    not support it.
+
+    Each entry maps claim patterns to:
+      - search_terms: claim-specific RAG query (falls back to domain terms)
+      - required_section_keywords: at least one must appear in the section for
+        the citation to be considered supportive of THIS claim
+    """
+
+    CLAIM_RULES = [
+        {
+            "patterns": ("first withdrawal",),
+            "search_terms": ["first withdrawal", "new withdrawal address", "new payee"],
+            "required_section_keywords": ["first withdrawal", "new address", "new payee",
+                                          "beneficiary"],
+        },
+        {
+            # Coordinated-trading claim: opposite-trade ratio / alternating
+            # buy-sell / offsetting positions. The current policy corpus has
+            # NO section supporting this semantics (velocity/structuring/
+            # fund-movement sections do not cover it), so findings matching
+            # this rule stay UNCITED unless a genuinely matching section
+            # exists (required keywords would have to appear in it).
+            "patterns": ("opposite-trade", "opposite trade", "coordinated trading",
+                         "offsetting position", "alternating buy"),
+            "search_terms": ["opposite trade", "coordinated trading", "offsetting positions"],
+            "required_section_keywords": ["opposite trade", "coordinated trading",
+                                          "offsetting position", "alternating buy",
+                                          "wash trad"],
+        },
+        {
+            "patterns": ("withdrawal frequency", "withdrawal velocity",
+                         "withdrawals in 24h", "withdrawals in the"),
+            "search_terms": ["withdrawal frequency", "transfer velocity", "burst"],
+            "required_section_keywords": ["velocity", "frequency", "burst", "spike",
+                                          "short time window"],
+        },
+        {
+            # Claim: the deterministic rule "New account with high activity"
+            # = young account (<7d) AND high TRADING frequency (>50/24h), as a
+            # CONJUNCTION. The corpus's 3.2 section ("large outbound activity
+            # soon after onboarding or shortly after a dormant period")
+            # supports transfer-volume-after-onboarding, not the trading-
+            # frequency + young-age conjunction — it does NOT support this
+            # claim, so the finding stays uncited unless a section explicitly
+            # covers BOTH the young-account AND high-trading conditions
+            # (keywords must evidence the conjunction, e.g. "new account AND
+            # high trading activity").
+            "patterns": ("new account with high activity",),
+            "search_terms": ["new account high trading activity",
+                             "young account high activity rule",
+                             "new account AND high trading"],
+            "required_section_keywords": [
+                "new account and high trading", "young account and high",
+                "new account with high activity", "account creation and trading",
+            ],
+        },
+    ]
+
+    @classmethod
+    def refine_search_terms(cls, finding_text: str, domain_terms: List[str]) -> List[str]:
+        """Claim-specific search terms when the finding matches a claim rule."""
+        low = finding_text.lower()
+        for rule in cls.CLAIM_RULES:
+            if any(p in low for p in rule["patterns"]):
+                return rule["search_terms"] + [
+                    t for t in domain_terms if t not in rule["search_terms"]
+                ][:2]
+        return domain_terms
+
+    @classmethod
+    def claim_supported(cls, finding_text: str, section: str, quote: str) -> bool:
+        """
+        Whether a retrieved section actually supports THIS finding's claim.
+
+        Returns True when no specific claim rule matches (domain validation is
+        then sufficient). When a claim rule matches, the section or quote must
+        contain at least one of the claim's required keywords — e.g. a
+        high-velocity section supports a frequency claim but NOT a
+        first-withdrawal/new-address claim.
+        """
+        low = finding_text.lower()
+        for rule in cls.CLAIM_RULES:
+            if any(p in low for p in rule["patterns"]):
+                text = f"{section} {quote}".lower()
+                return any(k in text for k in rule["required_section_keywords"])
+        return True
+
+
 class FindingClassifier:
     """
     Classifies findings into their types with strict priority rules.
@@ -80,10 +179,14 @@ class FindingClassifier:
         "network", "cluster", "connection", "connected to"
     ]
 
-    # Account-related keywords (lower priority than network)
+    # Account-related keywords (lower priority than network).
+    # KYC/CDD domain requires a GENUINE KYC signal word — a bare "account"
+    # mention is not enough (it routed ML evidence sentences like "the
+    # account's behavior..." to KYC). "new account" is also absent: account
+    # age is contextual evidence, never a KYC citation (see classify()).
     ACCOUNT_KEYWORDS = [
-        "account", "kyc", "cdd", "customer", "verification",
-        "onboarding", "identity", "new account"
+        "kyc", "cdd", "customer due diligence", "verification",
+        "onboarding", "identity", "customer", "enhanced due diligence",
     ]
 
     # Transaction-related keywords
@@ -124,12 +227,64 @@ class FindingClassifier:
         """
         text_lower = text.lower()
 
-        # Priority 1: Explicit signal score mentions (highest priority)
-        if "ml signal" in text_lower or "lightgbm" in text_lower or "ml score" in text_lower:
-            return FindingType.ML_SIGNAL
-        if "rule signal" in text_lower or "rule engine" in text_lower:
+        # Priority 0: The deterministic "New account with high activity" RULE
+        # (account_age_days < 7 AND trade_frequency_24h > 50) is RULE evidence
+        # when triggered — NOT contextual account age. It must be recognized
+        # by its rule name BEFORE the account-age contextual guard below.
+        # Negated mentions (the rule NOT being triggered, e.g. in the
+        # contextual account-age note) stay contextual.
+        if "new account with high activity" in text_lower and not any(
+            n in text_lower for n in (
+                "not triggered", "unless paired", "did not trigger",
+                "threshold not met", "not met",
+            )
+        ):
             return FindingType.RULE_SIGNAL
-        if "graph signal" in text_lower or "network signal" in text_lower:
+
+        # Account-age evidence is CONTEXTUAL: no policy document defines an
+        # account-age threshold (the only age-related logic is the code-side
+        # deterministic rule "New account with high activity":
+        # account_age_days < 7 AND trade_frequency_24h > 50). Account-age
+        # findings therefore get NO citation (UNKNOWN scope) rather than a
+        # generic KYC citation.
+        if any(p in text_lower for p in (
+            "account age", "days old", "new account", "account aging",
+            "deliberate aging",
+        )):
+            return FindingType.UNKNOWN
+
+        # Priority 0.5: GRAPH-ZERO informational notes (BEFORE any graph/ML
+        # keyword branch, since "no graph signal" contains "graph signal").
+        # The absence of a finding is not a policy-backed risk finding: it
+        # never receives any citation (not network, not KYC, not ML-guide).
+        if re.search(
+            r"no\s+(?:detected\s+)?(graph|network)\s+(signal|relationship|network)|"
+            r"graph\s+(?:detection\s+)?score\s*(?:of\s*)?(?:is\s*)?0(?:\.0)?\b|"
+            r"no\s+connected\s+(graph|network)|"
+            r"score\s*\(?(?:0|0\.0)\)?(?![\d.])",
+            text_lower,
+        ):
+            return FindingType.UNKNOWN
+
+        # Priority 1: Explicit signal mentions (highest priority).
+        # Recognize the label forms the explanation layer emits, both in
+        # conceptual-finding headers ("Rule-Based Alerts", "ML Pattern
+        # Detection Signal") and in sentence bodies ("The Rule Score is 80.0").
+        # RULE is checked first so a rule finding whose body also mentions the
+        # ML score is not swallowed by the ML patterns.
+        if any(p in text_lower for p in (
+            "rule signal", "rule engine", "rule score", "rule-based", "rule based",
+            "predefined risk rule", "risk rule",
+        )):
+            return FindingType.RULE_SIGNAL
+        if any(p in text_lower for p in (
+            "ml signal", "ml score", "ml pattern", "lightgbm", "machine learning",
+            "pattern detection",
+        )):
+            return FindingType.ML_SIGNAL
+        if any(p in text_lower for p in (
+            "graph signal", "network signal", "graph score", "graph network",
+        )):
             return FindingType.GRAPH_SIGNAL
 
         # Priority 1.5: NETWORK/GRAPH keywords (BEFORE generic "account")
@@ -148,9 +303,14 @@ class FindingClassifier:
             ]):
                 return FindingType.GRAPH_SIGNAL
 
-            # Account-related factors (check AFTER network)
+            # Account-age factors are contextual evidence -> no citation
+            # (no policy defines an account-age threshold)
+            if "age" in factor_lower or "account_age" in factor_lower:
+                return FindingType.UNKNOWN
+
+            # Account-related factors (check AFTER network/age)
             if any(word in factor_lower for word in [
-                "account", "kyc", "age", "customer", "onboarding", "identity"
+                "account", "kyc", "customer", "onboarding", "identity"
             ]):
                 return FindingType.ACCOUNT_PROFILE
 
@@ -174,15 +334,14 @@ class FindingClassifier:
         ]):
             return FindingType.GRAPH_SIGNAL
 
-        # Priority 5: Score-based classification (LOWEST priority - fallback only)
-        # Only use scores if no text/factor clues available
-        if graph_score and graph_score > 0:
-            return FindingType.GRAPH_SIGNAL
-        if ml_score and ml_score > 0:
-            return FindingType.ML_SIGNAL
-        if rule_score and rule_score > 0:
-            return FindingType.RULE_SIGNAL
-
+        # Priority 5: Score-based classification is DISABLED.
+        # The old fallback (graph_score>0 -> GRAPH, ml_score>0 -> ML ...) let a
+        # finding with NO textual signal of its own — e.g. an ML/Rule combined
+        # header like "High-Risk Pattern Detection" — be classified purely from
+        # whichever component score happened to be non-zero, producing
+        # cross-domain citation mismatches (an ML finding citing the AML
+        # network policy). A finding that declares no detection-method signal
+        # has no domain basis for a citation.
         return FindingType.UNKNOWN
 
 
@@ -196,7 +355,8 @@ class CitationRetrievalService:
     3. RAG retrieval within allowed scope ONLY
     4. Validate each citation for relevance
     5. Assign sequential IDs
-    6. Ensure every finding has at least one citation
+    6. Findings with no domain-relevant citation intentionally receive NONE
+       (no fallback citation sharing — domain enforcement is authoritative)
     """
 
     def __init__(
@@ -289,7 +449,8 @@ class CitationRetrievalService:
         citations, finding_to_ids = self._build_final_citations(
             unique_citations=unique_citations,
             finding_citations=finding_citations,
-            max_citations=max_citations
+            max_citations=max_citations,
+            all_findings=key_findings,
         )
 
         # Step 5: Ensure coverage (every finding has at least one citation)
@@ -337,8 +498,12 @@ class CitationRetrievalService:
             )
             return None
 
-        # Build search query
-        query = " ".join(scope.search_terms[:3])  # Use top 3 terms
+        # Build search query — claim-refined when the finding matches a
+        # specific claim rule (e.g. "First withdrawal to new address" searches
+        # for first-withdrawal/new-address policy, not generic velocity).
+        search_terms = ClaimRefiner.refine_search_terms(
+            finding.finding_text, scope.search_terms)
+        query = " ".join(search_terms[:3])
 
         try:
             # RAG retrieval with ALLOWED docs constraint
@@ -356,13 +521,26 @@ class CitationRetrievalService:
 
             # Find the best chunk that passes validation
             for chunk in chunks:
-                # Validate citation relevance
+                # Validate citation relevance (domain scope)
                 is_valid, reason = self.router.validate_citation_relevance(
                     finding_type=finding_type,
                     doc_name=chunk.doc,
                     section=chunk.section,
                     quote=chunk.text
                 )
+                if is_valid:
+                    # Validate CLAIM support: the section must support what
+                    # this finding actually claims (prevents e.g. a velocity
+                    # citation being reused for a first-withdrawal claim).
+                    if not ClaimRefiner.claim_supported(
+                        finding.finding_text, chunk.section, chunk.text
+                    ):
+                        logger.debug(
+                            f"Chunk rejected (claim mismatch) for "
+                            f"'{finding.finding_text[:40]}...': section "
+                            f"'{chunk.section[:40]}' does not support the claim"
+                        )
+                        continue
 
                 if is_valid:
                     # Sanitize quote based on audience
@@ -421,10 +599,16 @@ class CitationRetrievalService:
         self,
         unique_citations: Dict[str, Citation],
         finding_citations: Dict[str, Citation],
-        max_citations: int
+        max_citations: int,
+        all_findings: Optional[List[str]] = None
     ) -> Tuple[List[Citation], Dict[str, List[int]]]:
         """
         Build final citation list with sequential IDs.
+
+        Every finding passed for retrieval keeps an entry in the mapping:
+        cited findings -> [id]; uncited findings -> [] (the finding itself is
+        still valid — it simply has no policy grounding, and must not be
+        dropped or given an unrelated citation).
 
         Returns:
             Tuple of (citations list, finding_to_ids dict)
@@ -440,13 +624,14 @@ class CitationRetrievalService:
             final_citations.append(citation)
             chunk_to_seq[citation.chunk_id] = idx
 
-        # Build finding_to_ids mapping
+        # Build finding_to_ids mapping (every finding kept; uncited -> [])
         finding_to_ids = {}
-        for finding_text, citation in finding_citations.items():
-            if citation.chunk_id in chunk_to_seq:
+        for finding_text in (all_findings or list(finding_citations.keys())):
+            citation = finding_citations.get(finding_text)
+            if citation is not None and citation.chunk_id in chunk_to_seq:
                 finding_to_ids[finding_text] = [chunk_to_seq[citation.chunk_id]]
             else:
-                # Citation was filtered out
+                # Uncited (no claim-supporting policy) or citation filtered out
                 finding_to_ids[finding_text] = []
 
         return final_citations, finding_to_ids
@@ -458,32 +643,21 @@ class CitationRetrievalService:
         citations: List[Citation]
     ) -> Dict[str, List[int]]:
         """
-        Ensure every finding has at least one citation.
+        Citations are deliberately NOT forced onto findings that retrieved none.
 
-        If a finding has no citations, share the most generic citation.
+        Domain enforcement is authoritative: if no domain-relevant policy
+        citation exists for a finding, the finding simply has NO citation.
+        The previous behavior force-shared citations[0] with every uncited
+        finding, which mis-grounded unrelated findings (e.g. an ML-guide
+        citation attached to rule/graph/account-age lines). `is_valid` in the
+        result remains informational only.
         """
-        # Find findings without citations
-        findings_without = [
-            f for f in key_findings
-            if not finding_to_ids.get(f)
-        ]
-
-        if not findings_without:
-            return finding_to_ids
-
-        if not citations:
-            logger.warning("No citations available to share with findings without citations")
-            return finding_to_ids
-
-        # Share the most commonly used citation (or first one)
-        shared_citation = citations[0]
-
-        for finding in findings_without:
-            finding_to_ids[finding] = [shared_citation.id]
+        uncited = [f for f in key_findings if not finding_to_ids.get(f)]
+        if uncited:
             logger.debug(
-                f"Shared citation {shared_citation.id} with finding '{finding[:50]}...'"
+                f"{len(uncited)} finding(s) have no domain-relevant citation "
+                f"(by design — no fallback citation is attached)"
             )
-
         return finding_to_ids
 
 

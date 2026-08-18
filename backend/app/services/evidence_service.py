@@ -63,6 +63,237 @@ class EvidenceService:
             "rule_evidence": rule_evidence,
         }
 
+    # Feature-level factor name -> the finding names it corresponds to.
+    # RiskFactor rows are CONTEXTUAL / feature-level descriptive evidence (see
+    # RiskScoringService._create_risk_factors) — they are NOT ML findings.
+    # This mapping only records which unified finding a factor describes.
+    _FEATURE_FINDING_NAMES = {
+        "shared_device_count": "Shared Device Relationships",
+        "linked_account_count": "Linked Account Network",
+        "opposite_trade_ratio": "Coordinated Trading Pattern",
+        "trade_frequency_24h": "High Trading Frequency",
+        "withdrawal_risk_score": "Abnormal Withdrawal Behavior",
+    }
+
+    async def get_canonical_evidence(
+        self,
+        user_id: str,
+        risk_event=None,
+        risk_factors: Optional[List[Dict[str, Any]]] = None,
+        graph_data: Optional[Dict[str, Any]] = None,
+        has_graph_evidence: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Build the CANONICAL structured evidence for a case.
+
+        Two dimensions are kept strictly separate:
+          1. findings[]       — WHAT the system observed (unified, deduplicated;
+                                a finding may be supported by several sources)
+          2. detection_sources — WHICH detection methods actually produced /
+                                attributed that finding ("ML", "Rule", "Graph")
+
+        RiskFactor rows are feature-level/contextual evidence and are NEVER
+        auto-attributed to ML: "the ML model uses a feature" is not "ML
+        independently detected this finding". Attribution is only added where
+        the system has real evidence for it (a triggered rule => "Rule";
+        an actual graph relationship => "Graph").
+
+        Structure:
+            {
+              "ml":       {score, probability, primary_driver},
+              "rules":    {score, triggered: [...], consistent},
+              "graph":    {score, has_evidence, connected_accounts | note},
+              "contextual": {account_age_days, account_age_note},
+              "findings": [
+                  {name, evidence, detection_sources, evidence_type,
+                   observed_value?, threshold?, contribution?, description?,
+                   supporting_feature?}
+              ],
+            }
+
+        Read-only; reuses _derive_rule_evidence (aligned with the scorer).
+        """
+        from app.models.database import RiskEvent as RiskEventModel
+
+        if risk_event is None:
+            result = await self.db.execute(
+                select(RiskEventModel)
+                .where(RiskEventModel.user_id == user_id)
+                .order_by(desc(RiskEventModel.detected_at))
+                .limit(1)
+            )
+            risk_event = result.scalar_one_or_none()
+        if risk_event is None:
+            return {"ml": None, "rules": None, "graph": None, "contextual": None, "findings": []}
+
+        feature_evidence = await self._get_feature_evidence(user_id)
+        rule_evidence = await self._derive_rule_evidence(user_id, feature_evidence)
+
+        # Graph evidence: only when graph detection actually found something.
+        if has_graph_evidence and graph_data:
+            connected = max(len(graph_data.get("nodes") or []) - 1, 0)
+            graph_evidence = {
+                "score": float(risk_event.graph_score) if risk_event.graph_score else 0.0,
+                "has_evidence": True,
+                "connected_accounts": connected,
+            }
+        else:
+            connected = 0
+            graph_evidence = {
+                "score": float(risk_event.graph_score) if risk_event.graph_score else 0.0,
+                "has_evidence": False,
+                "note": "No detected graph signal (graph_score = 0 means no "
+                        "network relationship was found — it says nothing about "
+                        "the account being isolated, evasive, or operating alone).",
+            }
+
+        findings: List[Dict[str, Any]] = []
+        index: Dict[str, Dict[str, Any]] = {}
+
+        def upsert(name, sources, evidence_type, evidence, observed=None,
+                   threshold=None, contribution=None, description=None,
+                   supporting_feature=None):
+            """One real finding appears once; multiple sources merge on it."""
+            if name in index:
+                existing = index[name]
+                for s in sources:
+                    if s not in existing["detection_sources"]:
+                        existing["detection_sources"].append(s)
+                return
+            f = {
+                "name": name,
+                "evidence": evidence,
+                "detection_sources": list(sources),
+                "evidence_type": evidence_type,
+            }
+            if observed is not None:
+                f["observed_value"] = observed
+            if threshold is not None:
+                f["threshold"] = threshold
+            if contribution is not None:
+                f["contribution"] = contribution
+            if description is not None:
+                f["description"] = description
+            if supporting_feature is not None:
+                f["supporting_feature"] = supporting_feature
+            findings.append(f)
+            index[name] = f
+
+        # --- ML detector-level signal (expressed as data so it is always
+        # present in the findings list; it is a detector signal, NOT an
+        # attribution of any feature finding to ML) ---
+        ml_score = float(risk_event.ml_score) if risk_event.ml_score else 0.0
+        if ml_score >= 50:
+            upsert(
+                "ML Pattern Detection Signal",
+                ["ML"],
+                "detector_signal",
+                f"ML pattern detection score {ml_score}/100 — system signal, "
+                "not a calibrated probability of fraud",
+                observed={"ml_score": ml_score},
+                supporting_feature="ml_score",
+            )
+
+        # --- Rule findings (authoritative, from _derive_rule_evidence) ---
+        for rule in rule_evidence:
+            name = rule["rule_name"]
+            sources = ["Rule"]
+            # A rule on trading frequency / withdrawal behavior is about the
+            # same behavior the ML model scores, but ML attribution is only
+            # claimed when ML actually flagged this case AND the finding maps
+            # to an ML feature — modelUSES feature is not model DETECTED it.
+            observed = dict(rule.get("trigger") or {})
+            upsert(
+                name,
+                sources,
+                "rule",
+                rule.get("description", ""),
+                observed=observed or None,
+                threshold=rule.get("threshold"),
+                contribution=rule.get("contribution"),
+                description=rule.get("description"),
+            )
+
+        # --- Graph findings (only when graph detection found relationships) ---
+        if graph_evidence["has_evidence"]:
+            shared = (feature_evidence or {}).get("shared_device_count") or 0
+            if shared > 0:
+                upsert(
+                    "Shared Device Relationships",
+                    ["Graph"],
+                    "graph",
+                    f"{shared} linked account(s) through shared devices",
+                    observed={"shared_device_count": shared},
+                    supporting_feature="shared_device_count",
+                )
+            upsert(
+                "Linked Account Network",
+                ["Graph"],
+                "graph",
+                f"{connected} connected account(s) detected by network analysis",
+                observed={"connected_accounts": connected},
+                supporting_feature="linked_account_count",
+            )
+
+        # --- Feature-level findings (contextual/behavioral observations) ---
+        # RiskFactor rows describe observed behavior; they get a unified
+        # finding WITHOUT ML attribution (no per-feature ML attribution is
+        # persisted by the pipeline). If the same finding already exists
+        # (rule/graph above), only merge sources — no duplicates.
+        if feature_evidence:
+            for feat_key, finding_name in self._FEATURE_FINDING_NAMES.items():
+                value = feature_evidence.get(feat_key)
+                if value is None or value == 0:
+                    continue
+                factor = next(
+                    (f for f in (risk_factors or [])
+                     if (f.get("factor_name") if isinstance(f, dict) else getattr(f, "factor_name", None)) == finding_name),
+                    None,
+                )
+                desc = (factor.get("factor_description") if isinstance(factor, dict)
+                        else getattr(factor, "factor_description", None)) if factor else None
+                upsert(
+                    finding_name,
+                    ["Feature"],
+                    "feature",
+                    desc or f"{finding_name}: observed {feat_key} = {value}",
+                    observed={feat_key: value},
+                    supporting_feature=feat_key,
+                )
+
+        # --- Contextual account age (never a rule by itself) ---
+        contextual = {}
+        if feature_evidence:
+            age = feature_evidence.get("account_age_days")
+            if age is not None:
+                contextual["account_age_days"] = age
+                contextual["account_age_note"] = (
+                    "Contextual evidence only. The ONLY account-age rule is "
+                    "'New account with high activity' (account_age_days < 7 AND "
+                    "trade_frequency_24h > 50)."
+                )
+
+        rule_score = float(risk_event.rule_score) if risk_event.rule_score else 0.0
+        return {
+            "ml": {
+                "score": float(risk_event.ml_score) if risk_event.ml_score else 0.0,
+                "probability": float(risk_event.risk_probability) if risk_event.risk_probability else None,
+                "primary_driver": risk_event.primary_reason,
+            },
+            "rules": {
+                "score": rule_score,
+                "triggered": rule_evidence,
+                "note": "Rule score = sum of triggered rule contributions (capped at 100).",
+                "consistent": (
+                    None if not feature_evidence
+                    else (sum(r["contribution"] for r in rule_evidence) == int(rule_score))
+                ),
+            },
+            "graph": graph_evidence,
+            "contextual": contextual,
+            "findings": findings,
+        }
+
     async def _get_risk_summary(self, user_id: str) -> Dict[str, Any]:
         """Get risk summary from latest risk event."""
         from app.models.database import RiskEvent
@@ -493,6 +724,7 @@ class EvidenceService:
             "withdrawal_risk_score": float(feature.withdrawal_risk_score) if feature.withdrawal_risk_score else None,
             "withdrawal_frequency_24h": feature.withdrawal_frequency_24h,
             "withdrawal_volume_24h": float(feature.withdrawal_volume_24h) if feature.withdrawal_volume_24h else None,
+            "first_withdrawal_flag": bool(feature.first_withdrawal_flag) if feature.first_withdrawal_flag is not None else None,
         }
 
     async def _derive_rule_evidence(self, user_id: str, feature_evidence: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -502,7 +734,14 @@ class EvidenceService:
         Since rules are hardcoded in RiskScoringService, we derive
         which rules would have triggered based on feature values.
 
-        This is a READ-ONLY derivation - no new rule evaluation.
+        This is a READ-ONLY derivation - no new rule evaluation. The rules
+        below MUST stay aligned with RiskScoringService._calculate_rule_score
+        (same trigger conditions, same contributions), so the evidence shown
+        to the LLM/citations/UI matches what actually produced rule_score.
+
+        Each triggered rule carries its observed value(s), the threshold, and
+        the score contribution, so consumers never have to guess what a
+        rule_score number means.
         """
         if not feature_evidence:
             return []
@@ -512,11 +751,17 @@ class EvidenceService:
         # Rule: New account with high activity
         account_age = feature_evidence.get("account_age_days")
         trade_freq = feature_evidence.get("trade_frequency_24h")
-        if account_age and trade_freq and account_age < 7 and trade_freq > 50:
+        if account_age is not None and trade_freq is not None and account_age < 7 and trade_freq > 50:
             triggered_rules.append({
                 "rule_name": "New account with high activity",
                 "severity": "HIGH",
                 "description": f"Account is {account_age} days old with {trade_freq} trades in 24h",
+                "trigger": {
+                    "account_age_days": account_age,
+                    "trade_frequency_24h": trade_freq,
+                },
+                "threshold": "account_age_days < 7 AND trade_frequency_24h > 50",
+                "contribution": 40,
             })
 
         # Rule: High opposite trade ratio (frequent alternating buy/sell behavior)
@@ -525,7 +770,10 @@ class EvidenceService:
             triggered_rules.append({
                 "rule_name": "High opposite trade ratio",
                 "severity": "HIGH",
-                "description": f"Opposite trade ratio of {opp_ratio:.1%} indicates frequent alternating buy/sell behavior and possible wash trading pattern",
+                "description": f"Opposite trade ratio of {opp_ratio:.1%} indicates frequent alternating buy/sell behavior",
+                "trigger": {"opposite_trade_ratio": round(float(opp_ratio), 4)},
+                "threshold": "opposite_trade_ratio > 0.4",
+                "contribution": 35,
             })
 
         # Rule: Multiple shared devices
@@ -535,6 +783,9 @@ class EvidenceService:
                 "rule_name": "Multiple shared devices",
                 "severity": "HIGH",
                 "description": f"User shares {shared_devices} devices with other accounts",
+                "trigger": {"shared_device_count": shared_devices},
+                "threshold": "shared_device_count > 3",
+                "contribution": 30,
             })
 
         # Rule: High withdrawal frequency
@@ -543,16 +794,28 @@ class EvidenceService:
             triggered_rules.append({
                 "rule_name": "High withdrawal frequency",
                 "severity": "MEDIUM",
-                "description": f"{withdrawal_freq} withdrawals in 24h exceeds normal pattern",
+                "description": f"{withdrawal_freq} withdrawals in 24h exceeds the normal pattern",
+                "trigger": {"withdrawal_frequency_24h": withdrawal_freq},
+                "threshold": "withdrawal_frequency_24h > 5",
+                "contribution": 25,
             })
 
-        # Rule: Linked account network
-        linked_accounts = feature_evidence.get("linked_account_count")
-        if linked_accounts and linked_accounts > 5:
+        # Rule: First withdrawal (to a new address, with activity present)
+        first_withdrawal = feature_evidence.get("first_withdrawal_flag")
+        if first_withdrawal and withdrawal_freq is not None:
             triggered_rules.append({
-                "rule_name": "Large linked account network",
+                "rule_name": "First withdrawal to new address",
                 "severity": "MEDIUM",
-                "description": f"User connected to {linked_accounts} other accounts",
+                "description": (
+                    "First withdrawal to a new address flagged while withdrawal "
+                    f"activity is present ({withdrawal_freq} in 24h)"
+                ),
+                "trigger": {
+                    "first_withdrawal_flag": bool(first_withdrawal),
+                    "withdrawal_frequency_24h": withdrawal_freq,
+                },
+                "threshold": "first_withdrawal_flag = true AND withdrawal_frequency_24h present",
+                "contribution": 20,
             })
 
         return triggered_rules

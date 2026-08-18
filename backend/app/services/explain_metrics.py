@@ -64,6 +64,10 @@ class ExplainMetrics:
         self._llm_disabled_total = 0      # LLM not attempted (disabled/no key)
         self._llm_failed_total = 0        # LLM attempted but failed/timeout
 
+        # Persisted-store counters
+        self._persisted_total = 0         # Reads served from the persisted
+                                           # canonical explanation (NOT generations)
+
         # Latency tracking (rolling window)
         self._latencies_ms = deque(maxlen=latency_window_size)
 
@@ -105,6 +109,18 @@ class ExplainMetrics:
         """Increment fallback counter."""
         with self._lock:
             self._fallback_total += 1
+
+    def increment_persisted(self) -> None:
+        """
+        Increment the persisted-read counter.
+
+        Counts requests served from the persisted canonical explanation (cache
+        miss that hit the store). Deliberately does NOT bump llm_total /
+        fallback_total — a persisted read is not a generation, so generation
+        counters are never double-counted.
+        """
+        with self._lock:
+            self._persisted_total += 1
 
     def increment_llm(self) -> None:
         """Increment LLM counter (successful LLM explanations)."""
@@ -193,6 +209,9 @@ class ExplainMetrics:
                 "llm_failed_total": self._llm_failed_total,
                 "fallback_rate": round(fallback_rate, 4),
 
+                # Persisted-store metrics
+                "persisted_total": self._persisted_total,
+
                 # Latency metrics
                 "latency_ms_p50": round(p50, 2),
                 "latency_ms_p95": round(p95, 2),
@@ -215,6 +234,7 @@ class ExplainMetrics:
             self._llm_total = 0
             self._llm_disabled_total = 0
             self._llm_failed_total = 0
+            self._persisted_total = 0
             self._latencies_ms.clear()
 
 

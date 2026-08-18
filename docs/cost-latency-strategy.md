@@ -1,16 +1,19 @@
 # Cost & Latency Strategy for `/api/risk/explain`
 
-This document describes the cost and latency controls for the `/api/risk/explain` endpoint, which generates risk case explanations for investigation workflows.
+This document describes the cost and latency controls for the `/api/risk/explain` endpoint, which serves risk case explanations for investigation workflows.
+
+Explanations are **persisted canonical artifacts**, not transient cached responses. The endpoint reads through a three-tier architecture: an in-memory cache, a persisted canonical explanation, and — only when needed — generation.
 
 ---
 
 ## Goals
 
-The `/api/risk/explain` endpoint provides cost-controlled, latency-bounded explanation generation for risk investigations:
+The `/api/risk/explain` endpoint provides cost-controlled, latency-bounded explanation serving for risk investigations:
 
 - **Operational Continuity:** Investigation workflow remains functional regardless of LLM availability
-- **Cost Control:** Rate limiting and caching prevent runaway API costs
-- **Latency Boundaries:** Timeout protection ensures predictable response times
+- **Cost Control:** Rate limiting, caching, and persisted canonical explanations prevent runaway API costs and repeated generation
+- **Latency Boundaries:** Timeout protection and tiered reads bound response times
+- **Stable Narratives:** Ordinary reads return the same canonical explanation until an explicit regeneration or a case-version change
 - **Transparent Fallback:** Clear indication of explanation source (LLM vs model-based)
 
 ---
@@ -23,52 +26,189 @@ The `/api/risk/explain` endpoint provides cost-controlled, latency-bounded expla
 
 ---
 
-## Fallback Behavior
+## Explanation Persistence & Cache Architecture
 
-The platform is designed to operate fully without LLM integration. The `/explain` endpoint works in both modes:
+### Three-Tier Read/Generation Path
 
-### LLM Disabled (Default)
+```
+                Explanation Request
+                       │
+                       ▼
+                Version Fingerprint
+                       │
+                       ▼
+           ┌──────────────────────┐
+           │ Tier 1: Memory Cache │  in-memory TTL cache (performance only)
+           └──────────────────────┘
+                       │ miss / expiry
+                       ▼
+          ┌──────────────────────────────┐
+          │ Tier 2: Persisted Artifact   │  case_explanations table;
+          │     (canonical explanation)  │  one row per user_id + audience
+          └──────────────────────────────┘
+                  │ absent / stale
+                  ▼
+          ┌──────────────────────────────┐
+          │ Tier 3: Generate + Persist   │  LLM or deterministic fallback
+          │ → citations → normalization  │  → citation assembly/validation
+          │ → canonical artifact         │  → narrative contract → persist
+          └──────────────────────────────┘
+```
+
+Explicit `POST /api/risk/explain/regenerate` bypasses the read tiers and intentionally enters generation.
+
+### Tier 1 — In-Memory TTL Cache
+
+```python
+# backend/app/api/routes/risk.py
+class ExplanationCache:
+    def __init__(self, max_size: int = 1024, ttl_seconds: int = 600)
+```
+
+**Configuration:**
+
+```python
+EXPLAIN_CACHE_TTL_SECONDS: int = 600    # 10 minutes
+EXPLAIN_CACHE_MAX_SIZE: int = 1024      # max cached entries
+```
+
+**Semantics:**
+
+- Pure performance layer: accelerates repeated reads of the same canonical artifact
+- **TTL expiration does NOT trigger LLM generation** — expiry falls through to Tier 2
+- LRU eviction when full; per-worker (resets on restart), which is acceptable because Tier 2 survives restarts
+
+**Cache key:** `SHA256(user_id + "|" + audience + "|" + version_fingerprint)` — see fingerprint below.
+
+### Tier 2 — Persisted Canonical Explanation
+
+Stored in the **`case_explanations`** table (one current row per `user_id` + `audience`), alongside the `version_fingerprint` identifying the case/version context it was generated for.
+
+**Semantics:**
+
+- This is the **canonical narrative artifact** for the current case version — not a cache entry
+- Ordinary reads return this artifact without calling the LLM
+- Survives process restarts and memory-cache expiration
+- Prevents repeated generation of the same explanation across page reloads and multiple investigators viewing the same case
+
+### Tier 3 — Generate + Persist
+
+Entered only when:
+
+- No persisted artifact exists (first generation for this case/audience), or
+- The persisted artifact is **stale** (its `version_fingerprint` no longer matches the current case context), or
+- Explicit regeneration is requested (`/api/risk/explain/regenerate`)
+
+Generation pipeline:
+
+```
+LLM (default when enabled) or deterministic model-based fallback
+    ↓
+canonical evidence assembly
+    ↓
+citation retrieval + claim-level validation
+    ↓
+narrative contract normalization (numbering/format)
+    ↓
+persist as the new canonical artifact (case_explanations)
+```
+
+The persisted result — whether produced by the LLM or the deterministic fallback — becomes the current canonical artifact and is served by subsequent ordinary reads.
+
+---
+
+## Version Fingerprint
+
+A persisted explanation is valid only for the same case/version context:
+
+```
+version_fingerprint = sha256(
+    audience | risk_event_id | pipeline_run_id | model_version | policy_version
+)
+```
+
+Computed by `compute_explanation_fingerprint()` (`backend/app/services/explanation_store_service.py`). When any fingerprint input changes — a new pipeline run, a different model version, or **when `policy_version` changes** — the stored explanation becomes stale, and the next ordinary read enters Tier 3 and persists a fresh canonical artifact.
+
+> Note: fingerprint validity is based on the `policy_version` value that participates in the fingerprint, not on automatic detection of policy-file content changes.
+
+The in-memory cache key folds in the same fingerprint, so a version change naturally misses Tier 1 as well.
+
+---
+
+## Ordinary Read vs Explicit Regeneration
+
+### Ordinary Read — `POST /api/risk/explain`
+
+```
+Tier 1 memory cache
+    ↓ miss
+Tier 2 persisted canonical artifact
+    ↓ absent / stale
+Tier 3 generate + persist
+```
+
+- Cache expiry alone does **not** imply generation
+- A valid persisted artifact satisfies the request with no model call
+- Normal page reloads do **not** call the LLM again while the artifact is valid
+
+**`bypass_cache=true`** skips only the Tier 1 memory cache:
+
+```
+bypass_cache=true
+    ↓
+skip Tier 1
+    ↓
+Tier 2 persisted artifact can still serve the request
+```
+
+It does **not** force regeneration, call the LLM, or discard the persisted artifact. To force a new generation, use the explicit regeneration endpoint.
+
+### Explicit Regeneration — `POST /api/risk/explain/regenerate`
+
+**From the Investigation UI, users can select "Regenerate with LLM"** (in the
+Policy-backed Narrative header, next to the source badge; the button calls this
+endpoint).
+
+- Bypasses both read tiers
+- Intentionally generates a new explanation (LLM, or deterministic fallback when unavailable)
+- Runs the full citation/evidence/narrative pipeline
+- Persists the result as the new canonical artifact for `(user_id, audience)`
+
+**Regenerate with LLM is an explanation-level operation.** It does not rerun
+ML inference, deterministic rule scoring, graph scoring, or final risk score
+fusion — the risk event's scores and risk level are unchanged; only the
+explanation artifact is replaced. Ordinary page loads never regenerate.
+
+---
+
+## LLM Default + Deterministic Fallback
+
+### LLM Disabled (Default Configuration)
 
 When `ENABLE_LLM_EXPLANATION=false` or no API key is configured:
 
 ```python
 # Backend returns model-based explanations
-explanation = _generate_model_based_explanation(
-    risk_event, factors, graph_data
-)
+explanation = _generate_model_based_explanation(risk_event, factors, graph_data)
 # response.explanation_source = "MODEL_FALLBACK"
 ```
 
-**Behavior:**
 - Explanations generated from risk analysis outputs (ML scores, rule hits, graph signals)
-- No external API calls
-- Zero latency overhead
-- No cost incurred
+- No external API calls, no cost
+- The generated explanation is persisted as the canonical artifact like any other
 
-### LLM Enabled
+### LLM Enabled — LLM Is the Default Generator
 
-When `ENABLE_LLM_EXPLANATION=true` and `ANTHROPIC_API_KEY` is set:
-
-```python
-# Backend calls LLM API with timeout protection
-explanation = await llm_service.generate_explanation(...)
-# response.explanation_source = "LLM" (success) or "MODEL_FALLBACK" (failure)
-```
-
-**Behavior:**
-- LLM generates natural language summaries
-- Timeout protection (default 5s) with automatic fallback
-- API failure falls back to model-based explanation
-- Investigation workflow remains functional
-
-### LLM Failure Scenarios
+When `ENABLE_LLM_EXPLANATION=true` and `ANTHROPIC_API_KEY` is set, the LLM is the default explanation generator. On failure, the system falls back deterministically:
 
 | Failure Type | Behavior | User Experience |
 |-------------|----------|-----------------|
-| Timeout (≥5s) | Falls back to model-based explanation | Brief delay, then structured response |
-| API Error | Falls back to model-based explanation | Brief delay, then structured response |
-| Rate Limit (client) | Returns 429 status | Retry with exponential backoff |
-| No API Key | Uses model-based explanation immediately | No delay, structured response |
+| Timeout (≥ `EXPLAIN_LLM_TIMEOUT_SECONDS`) | Falls back to model-based explanation | Delay up to the timeout, then structured response |
+| Provider/API error | Falls back to model-based explanation | Brief delay, then structured response |
+| No API key / disabled | Model-based explanation immediately | No delay, structured response |
+| Rate limit (client) | Returns 429 status | Retry with backoff |
+
+**Fallback is a generation path, not a temporary response:** a fallback-generated explanation is also persisted as the canonical artifact, and subsequent ordinary reads are served from it rather than recomputing.
 
 **Critical:** Investigation workflow is never blocked by LLM unavailability or failures.
 
@@ -76,141 +216,70 @@ explanation = await llm_service.generate_explanation(...)
 
 ## Rate Limiting
 
-### Implementation
-
 Sliding window rate limiter per client IP:
-
-```python
-# backend/app/api/routes/risk.py:87-119
-class RateLimiter:
-    def __init__(self, requests_per_minute: int = 30)
-    def is_allowed(self, client_id: str) -> tuple[bool, Optional[str]]
-```
-
-### Default Configuration
 
 ```python
 EXPLAIN_RATE_LIMIT_PER_MIN: int = 30  # requests per minute per client IP
 ```
 
-### Behavior
-
 - Window: 60 seconds sliding window
 - Scope: Per client IP (x-forwarded-for, x-real-ip, or user_id fallback)
 - Exceeded: Returns HTTP 429 with error message
-
-### Production Tuning
-
-Considerations for production environments:
+- Applies to both ordinary reads and regeneration
 
 | Traffic Pattern | Suggested Setting | Rationale |
 |----------------|-------------------|-----------|
 | Low-volume investigations (10-50 concurrent analysts) | 30-60 req/min | Prevents individual abuse while allowing normal workflow |
 | High-volume operations (100+ analysts) | 60-120 req/min | Account for parallel investigation workflows |
-| API-based integrations | Per-service quotas | Use separate rate limit tiers for automated systems |
-
----
-
-## Caching
-
-### Implementation
-
-TTL-based LRU cache:
-
-```python
-# backend/app/api/routes/risk.py:43-74
-class ExplanationCache:
-    def __init__(self, max_size: int = 1024, ttl_seconds: int = 600)
-```
-
-### Cache Key
-
-Cache keys incorporate all factors that affect explanation output:
-
-```python
-key = SHA256(user_id + audience + pipeline_run_id + model_version + policy_version)
-```
-
-### Default Configuration
-
-```python
-EXPLAIN_CACHE_TTL_SECONDS: int = 600    # 10 minutes
-EXPLAIN_CACHE_MAX_SIZE: int = 1024     # max cached entries
-```
-
-### Cache Invalidation
-
-- **TTL Expiration:** Entries expire after 600 seconds
-- **LRU Eviction:** Oldest entries evicted when cache is full
-- **Key Changes:** Different audience, pipeline run, model version, or policy version generate new cache entries
-
-### Production Tuning
-
-| Factor | Consideration |
-|--------|---------------|
-| TTL | Balance freshness vs cache hit rate. 10 minutes works for static risk data; reduce if real-time updates are frequent |
-| Max Size | Estimate concurrent investigations × cache duration. 1024 supports ~100 req/min with 10-minute TTL |
+| API-based integrations | Per-service quotas | Separate rate limit tiers for automated systems |
 
 ---
 
 ## Timeout Protection
 
-### Implementation
-
-Async timeout wrapper with automatic fallback:
+### Application-Level LLM Timeout
 
 ```python
-# backend/app/services/llm_service.py:329-357
+# backend/app/services/llm_service.py
 explanation_text = await asyncio.wait_for(
     self.provider.generate_explanation(prompt),
     timeout=settings.EXPLAIN_LLM_TIMEOUT_SECONDS
 )
 ```
 
-### Default Configuration
-
 ```python
-EXPLAIN_LLM_TIMEOUT_SECONDS: int = 5  # seconds
+EXPLAIN_LLM_TIMEOUT_SECONDS: int = 30  # current default (config.py)
 ```
 
-### Behavior
+- **30 seconds is the current default application-level timeout for the LLM provider call**, not the entire HTTP request SLA
+- Reasoning/thinking-capable gateway responses may require a longer execution window than plain chat completions, which is why the default is above naive chat-completion budgets
+- The value remains configurable through environment/settings
+- On timeout: returns a `MODEL_FALLBACK` explanation with `llm_error="LLM provider timeout"`; other errors set `llm_error="LLM generation failed"` or `"LLM provider error"`
 
-- LLM call timeout → returns `MODEL_FALLBACK` explanation with `llm_error="LLM provider timeout"`
-- Other errors → returns `MODEL_FALLBACK` explanation with `llm_error="LLM generation failed"`
-- Investigation workflow continues with model-based explanation
+### Latency Components (do not conflate)
 
-### Production Tuning
+| Component | What it covers | Typical order |
+|-----------|----------------|---------------|
+| Provider latency | Time inside the LLM API call | Variable; reasoning models slower |
+| Application timeout | `EXPLAIN_LLM_TIMEOUT_SECONDS` bound on the provider call | 30s default |
+| Cache-hit latency | Memory lookup only | Lowest |
+| Persisted-read latency | DB read + deserialization, no model call | Low |
+| Fresh-generation latency | Provider + citation retrieval + validation + persistence | Highest |
+| Total request latency | Everything above plus rate-limit/data-fetch overhead | Path-dependent |
 
-| Scenario | Suggested Timeout | Rationale |
-|----------|-------------------|-----------|
-| Standard investigations | 5-10s | Balance responsiveness with LLM processing time |
-| Complex explanations | 10-15s | Allow for longer prompts if using larger context windows |
-| SLA-critical workflows | 2-3s | Prioritize fallback over waiting for LLM |
+### Interactive Read vs Generation
+
+- **Interactive reads** (valid memory or persisted artifact): fast; no model call
+- **Fresh generation:** materially slower — provider latency plus citation assembly, validation, narrative normalization, and persistence
+- Do not assume all explanation requests complete within a fixed small budget: the two paths have fundamentally different latency profiles
 
 ---
 
 ## Token Limiting
 
-### Implementation
-
-Max tokens parameter in LLM API call:
-
-```python
-# backend/app/services/llm_service.py:224-232
-message = self.client.messages.create(
-    model=settings.ANTHROPIC_MODEL,
-    max_tokens=settings.LLM_MAX_TOKENS,
-    ...
-)
-```
-
-### Default Configuration
-
 ```python
 LLM_MAX_TOKENS: int = 2000  # max tokens per LLM response
 ```
-
-### Cost Impact
 
 Token limits control response cost, not request cost. For production:
 
@@ -220,33 +289,74 @@ Token limits control response cost, not request cost. For production:
 
 ---
 
-## Configuration Reference
+## Cost Implications of Persisted Canonical Explanations
 
-### All Cost & Latency Settings
+Without canonical persistence, every page reload or cache expiry could cause repeated generation:
 
-```python
-# backend/app/config.py
-
-# LLM Integration Toggle
-ENABLE_LLM_EXPLANATION: bool = False          # LLM on/off
-ANTHROPIC_API_KEY: str = ""                  # API credential
-
-# LLM Model Settings
-# Model selection is controlled through ANTHROPIC_MODEL.When using an Anthropic-compatible gateway (e.g. Zhipu GLM),the model id should match the gateway provider's model naming.
-ANTHROPIC_MODEL: str = "claude-3-5-sonnet-latest"
-LLM_MAX_TOKENS: int = 2000                   # Response size limit
-LLM_TEMPERATURE: float = 0.3                 # Response randomness
-
-# Cost & Latency Controls
-EXPLAIN_CACHE_TTL_SECONDS: int = 600         # Cache TTL
-EXPLAIN_CACHE_MAX_SIZE: int = 1024           # Cache capacity
-EXPLAIN_RATE_LIMIT_PER_MIN: int = 30         # Rate limit per client
-EXPLAIN_LLM_TIMEOUT_SECONDS: int = 5         # LLM timeout
-
-# Privacy Controls
-SHOW_USER_ID_IN_LLM_PROMPT: bool = False     # User ID redaction in LLM prompt
-LOG_REDACT_USER_ID: bool = True              # User ID redaction in structured logs
 ```
+Without persistence (historical behavior):
+N page reads → potentially N generations
+```
+
+With the current architecture:
+
+```
+N page reads → typically 1 generation + many artifact reads,
+               until explicit regeneration or a version change
+```
+
+- One generation can serve many ordinary reads
+- Cache expiry no longer causes a regeneration storm — expired entries fall through to the persisted artifact
+- Process restarts do not destroy canonical explanations (Tier 2 is durable)
+- Multiple investigators viewing the same case do not trigger repeated model generation
+
+This is a cost-shaping property, not a strict mathematical guarantee: under concurrent first-generation requests, generation is governed by current application behavior (see Concurrency below).
+
+---
+
+## Concurrency & Generation Storms
+
+Persistence eliminates repeated generation across **cache expiry** and **process restarts**. Concurrent first-generation requests (no artifact yet, or stale) are governed by current application behavior: each such request runs the generation path. There is **no single-flight deduplication or distributed locking** in the current implementation — if concurrent cold requests are a concern in production, add request coalescing or an advisory lock around Tier 3.
+
+---
+
+## Monitoring Metrics
+
+### Metrics Implemented (`/api/risk/metrics/explain`)
+
+| Metric | Meaning |
+|--------|---------|
+| `requests_total` / `success_total` / `error_total` / `rate_limited_total` | Request counters |
+| `cache_hit_total` / `cache_miss_total` / `cache_hit_rate` | Tier 1 in-memory cache performance |
+| `persisted_total` | Reads served from the persisted canonical explanation (Tier 2) |
+| `llm_total` | Successful LLM **generations** |
+| `fallback_total` | Deterministic-fallback **generations** (= `llm_disabled_total` + `llm_failed_total`) |
+| `latency_ms_p50` / `latency_ms_p95` / `latency_ms_avg` | Latency percentiles over a rolling window (last 1000 requests) |
+
+**Key semantics:**
+
+- `persisted_total` counts **persisted-artifact reads** — it is *not* an LLM generation count and must not be added to `llm_total`/`fallback_total`
+- `llm_total` counts successful LLM generations only
+- `fallback_total` counts deterministic fallback generations; `fallback_rate = fallback_total / requests_total`
+- Cache hits and persisted reads skip regeneration, so they do not re-enter the LLM/fallback tallies — each logical explanation is counted once
+
+**Interpretation:**
+
+- High `llm_disabled_total` + low `fallback_rate`: platform operating as designed (no LLM configured)
+- High `llm_failed_total` + high `fallback_rate`: LLM API issues (check key, rate limits, network)
+- High `persisted_total` relative to `llm_total`: artifacts serving many reads — persistence working as intended
+
+Counters are per-worker, in-memory, and reset on process restart. For distributed deployments use Prometheus / an APM instead (histograms for percentiles, external storage for cross-worker aggregation).
+
+### Suggested Production Alerts
+
+| Metric | Type | Alert Threshold |
+|--------|------|-----------------|
+| `explain_cache_hit_rate` + `persisted_total` share | Gauge | Low combined artifact-serving rate (may indicate version churn) |
+| `explain_fallback_rate` | Counter | > 10% of generations (may indicate LLM issues) |
+| `explain_latency_p95` | Histogram | Elevated p95 among generation-path requests |
+| `explain_429_count` | Counter | > 10/min (abuse or limit too low) |
+| `explain_llm_error_count` | Counter | Sustained errors |
 
 ---
 
@@ -254,85 +364,49 @@ LOG_REDACT_USER_ID: bool = True              # User ID redaction in structured l
 
 ### Do Not Block Investigation UI
 
-The `/explain` endpoint should never block the investigation workflow:
-
-1. **Timeout Fallback:** If LLM exceeds timeout, return model-based explanation immediately
-2. **Error Fallback:** If LLM API fails, return model-based explanation with error indicator
+1. **Timeout Fallback:** If the LLM exceeds the timeout, a model-based explanation is returned after the timeout window
+2. **Error Fallback:** On LLM API failure, return model-based explanation with error indicator
 3. **Rate Limit Handling:** Return HTTP 429 with clear retry guidance; UI should handle gracefully
-4. **Cache-First:** Check cache before any computation or API calls
+4. **Tiered Reads:** Check memory cache, then the persisted artifact, before any computation or API calls
+5. **Stable Narratives:** Reloads return the same canonical explanation (no flicker of regenerated text)
 
 ### Audience Modes
 
 The endpoint supports two output modes via the `audience` query parameter:
 
-- **investigator** (default): Full detail with redacted quotes, complete key_findings
+- **investigator** (default): Full detail with redacted quotes, complete key findings
 - **business**: Reduced sensitive detail, sanitized quotes
 
 **Note:** This is a demonstration feature. Production should enforce RBAC via API gateway or SSO integration.
 
 ---
 
-## Monitoring Metrics
-
-### Suggested Metrics to Track
-
-| Metric | Type | Description | Alert Threshold |
-|--------|------|-------------|-----------------|
-| `explain_cache_hit_rate` | Gauge | % of requests served from cache | < 50% (may indicate TTL too short) |
-| `explain_fallback_rate` | Counter | % of requests falling back to model-based | > 10% (may indicate LLM issues) |
-| `explain_latency_p95` | Histogram | 95th percentile response time | > 10s (may indicate timeout setting too high) |
-| `explain_429_count` | Counter | Rate limit rejections per minute | > 10/min (may indicate abuse or limit too low) |
-| `explain_llm_error_count` | Counter | LLM API errors by type | Any sustained errors |
-| `explain_cache_size` | Gauge | Current cache entry count | Near max (may indicate cache too small) |
-
-### Fallback Semantics
-
-The `fallback_rate` metric has specific semantics:
-
-```
-fallback_rate = fallback_total / requests_total
-```
-
-**`fallback_total` includes ALL cases where model-based explanation is used:**
-1. **LLM Disabled/No Key:** LLM was not attempted (disabled or no API key configured)
-2. **LLM Failed:** LLM was attempted but failed (timeout or API error)
-
-**Additional counters for debugging:**
-- `llm_total`: Successful LLM explanations (explanation_source = "LLM")
-- `llm_disabled_total`: LLM not attempted (disabled/no key)
-- `llm_failed_total`: LLM attempted but failed/timeout
-
-**Interpretation:**
-- High `llm_disabled_total` + Low `fallback_rate`: Platform operating as designed (no LLM configured)
-- High `llm_failed_total` + High `fallback_rate`: LLM API issues (check API key, rate limits, network)
-- High `llm_total` + Low `fallback_rate`: LLM working correctly
-
-### Latency Percentile Semantics
-
-Latency percentiles (`latency_ms_p50`, `latency_ms_p95`) are computed as follows:
-
-**Implementation:**
-- **Rolling Window:** Last N requests held in memory (default N=1000)
-- **Calculation:** `sorted(latencies)[ceil(percentile * N) - 1]`
-- **Resets:** On process restart; not cross-worker aware
-
-**Production Note:**
-This in-memory implementation is suitable for single-process deployments. For production:
-- Use **Prometheus histograms** for distributed percentile calculation
-- Use **APM solutions** (Datadog, New Relic) for latency tracking
-- Consider **external metrics storage** for cross-worker aggregation
-
-### Metric Implementation Example
+## Configuration Reference
 
 ```python
-# Example using Prometheus (pseudo-code)
-from prometheus_client import Counter, Histogram, Gauge
+# backend/app/config.py
 
-explain_cache_hits = Counter('explain_cache_hits', 'Total cache hits')
-explain_cache_misses = Counter('explain_cache_misses', 'Total cache misses')
-explain_fallbacks = Counter('explain_fallbacks_total', 'Total fallbacks', ['reason'])
-explain_latency = Histogram('explain_latency_seconds', 'Explanation latency')
-explain_429s = Counter('explain_429s_total', 'Total 429 responses')
+# LLM Integration Toggle
+ENABLE_LLM_EXPLANATION: bool = False          # LLM on/off (LLM is default generator when enabled + key set)
+ANTHROPIC_API_KEY: str = ""                   # API credential
+
+# LLM Model Settings
+# Model selection is controlled through ANTHROPIC_MODEL. When using an
+# Anthropic-compatible gateway (e.g. Zhipu GLM), the model id should match
+# the gateway provider's model naming.
+ANTHROPIC_MODEL: str = "claude-3-5-sonnet-latest"
+LLM_MAX_TOKENS: int = 2000                    # Response size limit
+LLM_TEMPERATURE: float = 0.3                  # Response randomness
+
+# Cost & Latency Controls
+EXPLAIN_CACHE_TTL_SECONDS: int = 600          # Tier 1 memory-cache TTL
+EXPLAIN_CACHE_MAX_SIZE: int = 1024            # Tier 1 memory-cache capacity
+EXPLAIN_RATE_LIMIT_PER_MIN: int = 30          # Rate limit per client
+EXPLAIN_LLM_TIMEOUT_SECONDS: int = 30         # Application-level LLM provider timeout
+
+# Privacy Controls
+SHOW_USER_ID_IN_LLM_PROMPT: bool = False      # User ID redaction in LLM prompt
+LOG_REDACT_USER_ID: bool = True               # User ID redaction in structured logs
 ```
 
 ---
@@ -343,11 +417,14 @@ explain_429s = Counter('explain_429s_total', 'Total 429 responses')
 
 | Component | Location | Purpose |
 |-----------|----------|---------|
-| `RateLimiter` | `backend/app/api/routes/risk.py:87-119` | Per-client rate limiting |
-| `ExplanationCache` | `backend/app/api/routes/risk.py:43-74` | TTL-based LRU cache |
-| `_generate_cache_key` | `backend/app/api/routes/risk.py:144-156` | Cache key generation |
-| `LLMExplanationService` | `backend/app/services/llm_service.py` | LLM integration with timeout |
-| `/explain` endpoint | `backend/app/api/routes/risk.py:776-975` | Main endpoint with controls |
+| `RateLimiter` | `backend/app/api/routes/risk.py` | Per-client rate limiting |
+| `ExplanationCache` | `backend/app/api/routes/risk.py` | Tier 1 in-memory TTL cache (performance only) |
+| `ExplanationStoreService` | `backend/app/services/explanation_store_service.py` | Tier 2 persisted canonical artifacts + version fingerprint |
+| `CaseExplanation` | `backend/app/models/database.py` | Persistence model (`case_explanations`, unique per user+audience) |
+| `narrative_contract` | `backend/app/services/narrative_contract.py` | Deterministic narrative normalization in Tier 3 |
+| `LLMExplanationService` | `backend/app/services/llm_service.py` | LLM integration with timeout + deterministic fallback |
+| `/explain` endpoint | `backend/app/api/routes/risk.py` | Ordinary read (tiered) |
+| `/explain/regenerate` endpoint | `backend/app/api/routes/risk.py` | Explicit regeneration |
 
 ### Data Flow
 
@@ -355,32 +432,31 @@ explain_429s = Counter('explain_429s_total', 'Total 429 responses')
 Client Request
     │
     ▼
-Rate Limit Check ────────► 429 if exceeded
+Rate Limit Check ───────────► 429 if exceeded
     │
     ▼
-Cache Lookup ─────────────► Return cached if hit
+Fetch Risk Event ────────────► 404 if not found
     │
     ▼
-Fetch Risk Data
+Version Fingerprint
+    │
+    ├──► Tier 1 memory cache hit ──────────► return artifact
+    │
+    ├──► Tier 2 persisted artifact valid ──► return artifact (seed Tier 1)
+    │
+    ▼ (absent / stale, or explicit /regenerate)
+Tier 3: canonical evidence → LLM or fallback
+        → citations → narrative contract → persist artifact
     │
     ▼
-LLM Enabled? ────────────► No → Model-based explanation
-    │ Yes                          │
-    ▼                              │
-LLM Call (with timeout)           │
-    │                              │
-    ├──── Timeout ────────────────┤
-    ├──── Error ──────────────────┤
-    │                              │
-    ▼                              ▼
-Return Explanation ◄──────────────┘
-    │
-    ▼
-Store in Cache
-    │
-    ▼
-Return Response
+Return Explanation
 ```
+
+---
+
+## Historical Note
+
+Earlier revisions of this document described a single in-memory TTL cache with a 5-second LLM timeout, where cache expiration could lead to regeneration on the next request. That architecture predates persisted canonical explanations. Any historical measurements or budgets based on those assumptions (e.g. 2–3s SLA targets tied to a 5s timeout) should be read as **pre-persistence** context. The current architecture uses a 30-second default LLM timeout, persisted canonical explanations, and a three-tier read/generation path.
 
 ---
 
@@ -389,3 +465,4 @@ Return Response
 - [ML Pipeline Documentation](ml-pipeline.md) — Feature engineering and model scoring
 - [Risk Event Lifecycle](risk-event-lifecycle.md) — Investigation workflow
 - [Security & Privacy](security_privacy.md) — Data handling and sanitization
+- Project `README.md` — Canonical Evidence, Narrative Contract, and citation architecture

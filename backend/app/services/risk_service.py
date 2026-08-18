@@ -186,6 +186,9 @@ class RiskScoringService:
         """
         score = 0.0
 
+        # Deterministic scoring rule (distinct from the contextual "Account Age" factor
+        # emitted by _create_risk_factors). This is the ONLY account-age-related rule and it
+        # contributes to rule_score only when BOTH conditions hold.
         # Rule: New account with high activity
         if feature.account_age_days and feature.account_age_days < 7:
             if feature.trade_frequency_24h and feature.trade_frequency_24h > 50:
@@ -365,14 +368,22 @@ class RiskScoringService:
         feature: FeatureTable
     ):
         """Create detailed risk factors for the event."""
-        # Create factors for significant features
+        # These are CONTEXTUAL risk factors (descriptive evidence for the analyst/LLM) drawn
+        # from the feature table. A factor here does NOT by itself trigger a score. It is
+        # distinct from:
+        #   (A) deterministic scoring rules -> see _calculate_rule_score / _combine_scores.
+        #       The only account-age rule is "New account with high activity":
+        #         account_age_days < 7 AND trade_frequency_24h > 50 -> rule_score += 40
+        #   (B) policy-backed guidance -> policies/*.md, surfaced via citations.
+        # In particular, account_age_days is emitted for ANY age > 0, so it is labelled
+        # "Account Age" (context), NOT "New Account Risk" (which would imply a threshold/rule).
         factor_mapping = {
             "shared_device_count": "Shared Device Relationships",
             "linked_account_count": "Linked Account Network",
             "opposite_trade_ratio": "Coordinated Trading Pattern",
             "trade_frequency_24h": "High Trading Frequency",
             "withdrawal_risk_score": "Abnormal Withdrawal Behavior",
-            "account_age_days": "New Account Risk",
+            "account_age_days": "Account Age",
         }
 
         for attr, name in factor_mapping.items():
@@ -396,7 +407,10 @@ class RiskScoringService:
             "Coordinated Trading Pattern": f"{value*100:.1f}% opposite trading ratio detected",
             "High Trading Frequency": f"{int(value)} trades in 24h period",
             "Abnormal Withdrawal Behavior": f"Risk score: {value:.2f}",
-            "New Account Risk": f"{int(value)} days old - new account indicator",
+            # Contextual account-age evidence. Wording must NOT imply a policy threshold, a
+            # "new account" classification, or any rule trigger. (The thresholded new-account
+            # rule lives in _calculate_rule_score as "New account with high activity".)
+            "Account Age": f"Account is {int(value)} days old (contextual account-age evidence; not a policy threshold)",
         }
         return descriptions.get(factor_name, f"Value: {value}")
 

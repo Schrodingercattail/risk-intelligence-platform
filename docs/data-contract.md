@@ -1762,3 +1762,317 @@ Data Source Consistency:
 - Automatically updates when new data is uploaded
 
 No hardcoded values - all data from backend API responses.
+
+---
+
+21. Explanation Narrative Contract (LLM / Fallback)
+
+This section defines the data contract for the Policy-backed Narrative APIs:
+ordinary explanation reads, explicit regeneration, the persisted canonical
+explanation artifact, and the canonical evidence structure that feeds them.
+Architecture rationale lives in
+[docs/architecture/llm-optional-design.md](architecture/llm-optional-design.md).
+
+Endpoint Summary:
+
+| Endpoint | Purpose | Generation behavior | Response |
+|----------|---------|---------------------|----------|
+| POST /api/risk/explain | Ordinary explanation read | May be served from the in-memory cache, the persisted canonical artifact, or (only when no valid artifact exists) a fresh generation | ExplanationResponse |
+| POST /api/risk/explain/regenerate | Explicit generation request | Always bypasses read tiers and generates a new explanation; persists it as the new canonical artifact | ExplanationResponse |
+
+An ordinary `/explain` request is a READ, not a generation request.
+
+---
+
+21.1 POST /api/risk/explain
+
+Request body (ExplanationRequest):
+
+{
+  "user_id": "U00233"        // string, required
+}
+
+Query parameters:
+
+| Parameter | Type | Default | Notes |
+|-----------|------|---------|-------|
+| audience  | string | investigator | investigator (full detail) or business (reduced sensitive detail) |
+| bypass_cache | bool | false | Skips the in-memory cache tier ONLY. Does NOT force regeneration — the persisted canonical artifact can still serve the request |
+
+Response: ExplanationResponse (see 21.3).
+
+Serving behavior (contract-level):
+
+"Response may be served from in-memory cache, persisted canonical artifact,
+or a fresh generation path depending on the current case version."
+
+- Cache hit: stored artifact returned; no generation.
+- Cache miss/expiry: falls through to the persisted artifact; no generation
+  merely because the cache expired.
+- Persisted artifact absent or stale (version_fingerprint mismatch): fresh
+  generation (LLM default when configured, otherwise deterministic fallback),
+  then persisted as the new canonical artifact.
+
+This endpoint does not modify RiskEvent fields.
+
+---
+
+21.2 POST /api/risk/explain/regenerate
+
+Explicit regeneration request — creates a new explanation artifact.
+
+Request body (ExplanationRequest): same as /explain.
+
+Query parameters:
+
+| Parameter | Type | Default | Notes |
+|-----------|------|---------|-------|
+| audience  | string | investigator | Same audience semantics as /explain |
+
+Response: ExplanationResponse (see 21.3).
+
+Behavior:
+
+- Bypasses both read tiers (cache and persisted artifact)
+- Generates a new narrative (LLM default when configured, otherwise
+  deterministic fallback)
+- Runs citation/evidence/narrative assembly
+- Persists the result as the new canonical artifact for (user_id, audience)
+- Returns the new ExplanationResponse
+
+This endpoint does NOT:
+
+- Modify any RiskEvent score fields
+- Recalculate ML score
+- Recalculate Rule score
+- Recalculate Graph score
+- Recalculate the final risk score
+- Change risk level
+
+Regeneration is an explanation-level operation; RiskEvent data remains
+unchanged.
+
+---
+
+21.3 ExplanationResponse Schema
+
+Source of truth: backend/app/models/schemas.py (ExplanationResponse).
+
+{
+  "summary": string,                      // required
+  "key_findings": List[string],           // default []
+  "recommended_action": string,           // required
+  "citations": List[PolicyCitation],      // default []
+  "explanation_source": string,           // "LLM" | "MODEL_FALLBACK" (default "MODEL_FALLBACK")
+  "llm_error": string | null,             // optional; short provider error message
+  "missing_info": List[string]            // default []; evidence gaps from actual case data
+}
+
+Field semantics:
+
+- explanation_source: the generator of the artifact. Values defined by the
+  code: "LLM" (successful LLM generation) or "MODEL_FALLBACK" (deterministic
+  model-based explanation — LLM disabled/unavailable, timed out, or failed).
+- llm_error: null on success; on fallback carries a short reason
+  (e.g. "LLM provider timeout"). It is metadata, not narrative content.
+- key_findings: array of strings. The backend owns numbering and grouping;
+  each element is one conceptual finding (typically "N. Title\nsupporting
+  evidence" as assembled by the narrative contract). Citation markers [n]
+  may appear inline within finding/action strings — they are text, not
+  response fields.
+- missing_info: List[string]; evidence-completeness gaps derived from actual
+  case data (e.g. unavailable device history). An empty list is valid and
+  means no gaps detected.
+
+Citation markers are NOT separate response fields: [n] inside
+key_findings/recommended_action text refers to the nth entry of the
+citations array.
+
+---
+
+21.4 PolicyCitation Schema (citations array items)
+
+Source of truth: backend/app/models/schemas.py (PolicyCitation).
+
+{
+  "id": int,          // citation number referenced by [n] markers in text
+  "doc": string,      // policy document filename
+  "section": string,  // policy section path
+  "quote": string,    // policy quote (audience-redacted for business mode)
+  "chunk_id": string  // retrieval chunk identifier
+}
+
+Data-contract semantics:
+
+- A finding MAY exist without a citation. Not every finding has a citation,
+  and not every finding is required to have one.
+- "No citation is better than a wrong citation": citations are attached only
+  when the policy quote supports the finding's exact claim.
+- Uncited findings simply carry no [n] marker; they are not dropped.
+
+---
+
+21.5 CaseExplanation Persistence Contract
+
+Source of truth: backend/app/models/database.py (CaseExplanation, table
+case_explanations). This is NOT a cache table — it stores the current
+canonical explanation artifact for a (user_id, audience) pair together with
+its version context.
+
+| Column | Type | Nullable | Notes |
+|--------|------|----------|-------|
+| id | Integer PK | no | autoincrement |
+| user_id | String(50), FK users.user_id | no | |
+| audience | String(20) | no | "investigator" or "business" |
+| risk_event_id | Integer, FK risk_events.id | yes | case version context |
+| pipeline_run_id | String(50) | yes | case version context |
+| model_version | String(20) | yes | case version context |
+| policy_version | String(50) | yes | case version context |
+| version_fingerprint | String(64) | no | sha256 — see 21.6 |
+| explanation_payload | Text | no | full ExplanationResponse JSON |
+| explanation_source | String(20) | no | "LLM" or "MODEL_FALLBACK" |
+| model_provider | String(50) | yes | e.g. ANTHROPIC_MODEL, or "replay" |
+| generated_at | DateTime(tz), server_default now() | no (default) | artifact generation time |
+
+Constraints:
+
+- UNIQUE (user_id, audience) — one current canonical artifact per
+  user/audience pair; regeneration replaces the row
+- INDEX idx_case_explanations_user (user_id)
+
+explanation_payload is the JSON serialization of the ExplanationResponse
+served to clients; ordinary reads deserialize and return it.
+
+---
+
+21.6 version_fingerprint Contract
+
+Computed by backend/app/services/explanation_store_service.py:
+
+version_fingerprint = sha256(
+    audience | risk_event_id | pipeline_run_id | model_version | policy_version
+)
+
+Data-contract meaning:
+
+- Identifies the case/version context for which the persisted explanation
+  is valid
+- Determines whether a persisted artifact corresponds to the CURRENT case
+  context: a fingerprint mismatch marks the artifact stale, and the next
+  ordinary read regenerates
+
+This is a hash of the listed context VALUES (the policy_version value that
+participates in the fingerprint), not a hash of policy file contents and not
+an automatic invalidation on any policy file change.
+
+---
+
+21.7 Canonical Evidence Structure
+
+Source of truth: backend/app/services/evidence_service.py
+(EvidenceService.get_canonical_evidence()). This structure is the data
+contract consumed by the explanation pipeline (LLM prompt, citation
+retrieval, investigation flows); it is an internal service structure, not a
+public API response.
+
+{
+  "ml": {
+    "score": float,              // 0-100 system signal (not a calibrated probability)
+    "probability": float|null,   // raw model output
+    "primary_driver": string|null
+  },
+  "rules": {
+    "score": float,              // sum of triggered contributions, capped at 100
+    "triggered": [
+      {
+        "rule_name": string,
+        "severity": string,
+        "description": string,
+        "trigger": { "<feature>": value },   // observed values
+        "threshold": string,                 // e.g. "account_age_days < 7 AND trade_frequency_24h > 50"
+        "contribution": int                  // score points
+      }
+    ],
+    "note": string,
+    "consistent": bool|null       // derived rule evidence reconciles with rule score
+  },
+  "graph": {
+    "score": float,
+    "has_evidence": bool,
+    "connected_accounts": int     // present when has_evidence
+    // OR "note": string           // explicit no-signal note when score = 0
+  },
+  "contextual": {
+    "account_age_days": int,      // present when available
+    "account_age_note": string
+  },
+  "findings": [
+    {
+      "name": string,
+      "evidence": string,
+      "detection_sources": List[string],   // e.g. ["Rule"], ["Graph","Feature"], ["ML"]
+      "evidence_type": string,             // "detector_signal" | "rule" | "graph" | "feature"
+      "observed_value": object|null,
+      "threshold": string|null,
+      "contribution": int|null,
+      "description": string|null,
+      "supporting_feature": string|null
+    }
+  ]
+}
+
+Contract semantics:
+
+- detection_sources is INTERNAL provenance metadata (which detection methods
+  produced the finding). It is not a user-facing narrative field.
+- Structured data contract ≠ presentation contract: fields such as
+  contribution, threshold, and detection_sources are retained in Canonical
+  Evidence even though the default user-facing narrative does not display
+  them.
+
+---
+
+21.8 RiskFactor Contract (data semantics)
+
+Source of truth: backend/app/models/database.py (RiskFactor, table
+risk_factors).
+
+| Column | Type | Nullable | Notes |
+|--------|------|----------|-------|
+| id | Integer PK | no | autoincrement |
+| risk_event_id | Integer, FK risk_events.id | no | owning risk event |
+| factor_name | String(100) | no | e.g. "High Trading Frequency", "Account Age" |
+| factor_value | Numeric(10, 4) | yes | observed feature value |
+| factor_description | Text | yes | human-readable description |
+
+Data semantics:
+
+RiskFactor rows are persisted feature-level / contextual descriptive
+evidence associated with a risk event. A RiskFactor is NOT:
+
+- an ML finding
+- a Rule trigger
+- a Graph finding
+
+"A feature is used by the ML model" does not imply "ML independently
+detected that finding". Attribution of findings to detection sources is
+carried by Canonical Evidence findings[].detection_sources, not by
+RiskFactor rows.
+
+---
+
+21.9 Backward Compatibility
+
+The persisted explanation architecture changes the GENERATION LIFECYCLE,
+not the public ExplanationResponse contract:
+
+- ExplanationResponse fields are unchanged (summary, key_findings,
+  recommended_action, citations, explanation_source, llm_error, missing_info)
+- /api/risk/explain keeps its request shape and response schema
+- /api/risk/explain/regenerate is an ADDITIONAL endpoint
+- bypass_cache remains a query parameter (its semantics narrowed to
+  "skip in-memory cache tier only", which is behaviorally compatible for
+  readers and stricter for anyone who relied on it forcing regeneration —
+  such callers must use the regenerate endpoint)
+
+No public response schema breaking change was introduced.

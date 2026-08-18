@@ -5,7 +5,7 @@ Export LLM Explanation Outputs for Evaluation Cases
 This script regenerates explanation outputs for the existing evaluation
 case set. Unlike export_explain_eval_set.py, it does NOT sample: it reads
 every user_id from eval/explain_eval_cases.csv and calls /api/risk/explain
-with bypass_cache=true so each explanation is produced fresh.
+via the explicit regenerate endpoint so each explanation is produced fresh.
 
 Usage:
     python tools/export_llm_explain_eval.py \\
@@ -25,7 +25,7 @@ from typing import Any, Dict, List
 
 
 # API endpoint configuration - easy to change if endpoints differ
-EXPLAIN_ENDPOINT = "/api/risk/explain"
+EXPLAIN_ENDPOINT = "/api/risk/explain/regenerate"  # explicit regeneration (bypass_cache no longer forces fresh generation)
 
 
 def read_user_ids(cases_path: str) -> List[str]:
@@ -64,8 +64,10 @@ def fetch_explanation(
     """
     Fetch a fresh explanation for a specific user.
 
-    Always sends bypass_cache=true so the server regenerates the
-    explanation rather than returning a cached response.
+    Calls the explicit POST /api/risk/explain/regenerate endpoint so the
+    server always generates a NEW explanation (bypass_cache on /explain no
+    longer forces regeneration — it only skips the in-memory cache tier and
+    the persisted canonical explanation is still served).
 
     Args:
         base_url: Base URL of the API (e.g. http://localhost:8000)
@@ -75,7 +77,7 @@ def fetch_explanation(
     Returns:
         Explanation response dictionary, or an error dictionary on failure.
     """
-    params = {"audience": audience, "bypass_cache": "true"}
+    params = {"audience": audience}
     query_string = urllib.parse.urlencode(params)
     url = f"{base_url}{EXPLAIN_ENDPOINT}?{query_string}"
 
@@ -171,7 +173,7 @@ def main() -> None:
     print(f"Base URL: {base_url}")
     print(f"Cases CSV: {args.cases}")
     print(f"Output dir: {out_dir}")
-    print(f"Audience: {args.audience} (bypass_cache=true)")
+    print(f"Audience: {args.audience} (explicit regeneration)")
     print()
 
     # Read cases - fatal error if the CSV cannot be read or is empty
@@ -199,7 +201,7 @@ def main() -> None:
     successes = 0
     failures: List[Dict[str, str]] = []
 
-    print(f"Fetching {total} explanation(s) with bypass_cache=true...")
+    print(f"Fetching {total} explanation(s) via explicit regeneration...")
     for index, user_id in enumerate(user_ids, start=1):
         print(f"[{index}/{total}] {user_id} ... ", end="", flush=True)
         explanation = fetch_explanation(base_url, user_id, audience=args.audience)

@@ -60,13 +60,43 @@ class TestFindingClassifier:
             assert finding_type == expected_type, \
                 f"'{text}' should be {expected_type}, got {finding_type}"
 
-    def test_new_account_risk_classified_as_account_profile(self):
-        """Test new account risk is classified as ACCOUNT_PROFILE."""
+    def test_account_age_evidence_is_not_citable(self):
+        """Account-age evidence is contextual: UNKNOWN (no citation), not KYC.
+
+        No policy document defines an account-age threshold (the only age logic
+        is the code-side "New account with high activity" rule), so account-age
+        findings must NOT be routed to KYC/CDD.
+        """
         finding_type = self.classifier.classify(
             text="Elevated New Account Risk",
             factor_name="account_age_days"
         )
+        assert finding_type == FindingType.UNKNOWN
+
+        # Header form emitted by the grounded LLM output
+        assert self.classifier.classify(text="3. Account Age Context") == FindingType.UNKNOWN
+        # Supporting-line form
+        assert self.classifier.classify(text="The account is 112 days old.") == FindingType.UNKNOWN
+
+    def test_kyc_finding_still_classified_as_account_profile(self):
+        """Genuinely KYC-related findings still route to ACCOUNT_PROFILE."""
+        finding_type = self.classifier.classify(
+            text="KYC verification level is NONE"
+        )
         assert finding_type == FindingType.ACCOUNT_PROFILE
+
+    def test_rule_and_graph_header_labels_classified(self):
+        """Conceptual-finding header labels classify to their signal domain.
+
+        Graph-ZERO statements ("The Graph Score is 0.0.", "No Graph Network
+        Detected") are the ABSENCE of a finding: UNKNOWN (never cited).
+        """
+        assert self.classifier.classify(text="2. Rule-Based Alerts") == FindingType.RULE_SIGNAL
+        assert self.classifier.classify(text="The Rule Score is 80.0") == FindingType.RULE_SIGNAL
+        assert self.classifier.classify(text="1. ML Pattern Detection Signal") == FindingType.ML_SIGNAL
+        assert self.classifier.classify(text="4. No Graph Network Detected") == FindingType.UNKNOWN
+        assert self.classifier.classify(text="The Graph Score is 0.0.") == FindingType.UNKNOWN
+        assert self.classifier.classify(text="Linked Account Network — 18 accounts") == FindingType.GRAPH_SIGNAL
 
     def test_rule_signal_classification(self):
         """Test rule signal is correctly classified."""
@@ -263,13 +293,13 @@ class TestCitationRetrievalService:
                 f"Graph finding should NOT cite CDD: {cit.doc}"
 
     def test_account_finding_retrieves_kyc_citation(self):
-        """Test that ACCOUNT_PROFILE findings retrieve KYC citations."""
+        """Genuinely KYC-related findings retrieve KYC citations; account-age does not."""
         result = self.service.retrieve_citations(
-            key_findings=["Elevated New Account Risk"],
+            key_findings=["KYC verification level is NONE"],
             ml_score=0.0,
             rule_score=0.0,
             graph_score=0.0,
-            factors=[{"factor_name": "account_age_days", "factor_value": 5}],
+            factors=[],
             has_graph_evidence=False,
             audience="investigator"
         )
@@ -285,7 +315,25 @@ class TestCitationRetrievalService:
                 found_kyc = True
                 break
 
-        assert found_kyc, "Account finding should have KYC citation"
+        assert found_kyc, "KYC finding should have KYC citation"
+
+    def test_account_age_finding_gets_no_citation(self):
+        """Account-age evidence must NOT receive a generic KYC citation."""
+        result = self.service.retrieve_citations(
+            key_findings=["3. Account Age Context"],
+            ml_score=0.0,
+            rule_score=0.0,
+            graph_score=0.0,
+            factors=[{"factor_name": "Account Age", "factor_value": 112}],
+            has_graph_evidence=False,
+            audience="investigator"
+        )
+        # No domain-relevant policy exists for account age -> no citation at all
+        assert result.finding_to_citations.get("3. Account Age Context") in ([], None)
+        assert not any(
+            "kyc" in cit.doc.lower() or "cdd" in cit.doc.lower()
+            for cit in result.citations
+        ), "Account-age finding must not cite KYC"
 
     def test_rule_finding_retrieves_aml_transaction_policy(self):
         """Test that RULE_SIGNAL findings retrieve AML transaction policies."""
@@ -428,14 +476,14 @@ class TestCitationRetrievalService:
                 f"Linked Account Network should NOT cite KYC: {cit.doc}"
 
     def test_u00010_case_mixed_signal_types(self):
-        """Test U00010 case with multiple signal types."""
+        """Test mixed signal types: each domain gets its own citation; account-age gets none."""
         key_findings = [
             "ML Signal Score: 85.00",
             "Rule Engine Signal Score: 72.50",
-            "Elevated New Account Risk"
+            "3. Account Age Context"
         ]
 
-        factors = [{"factor_name": "account_age_days", "factor_value": 5}]
+        factors = [{"factor_name": "Account Age", "factor_value": 5}]
 
         result = self.service.retrieve_citations(
             key_findings=key_findings,
@@ -447,10 +495,6 @@ class TestCitationRetrievalService:
             audience="investigator"
         )
 
-        # All findings should have citations
-        assert result.is_valid
-
-        # Check each finding type got appropriate citations
         # ML signal should not cite transaction
         ml_ids = result.finding_to_citations.get("ML Signal Score: 85.00", [])
         for cit in result.citations:
@@ -460,14 +504,12 @@ class TestCitationRetrievalService:
                     assert "transaction" not in section_lower, \
                         "ML should not cite transaction section"
 
-        # Account finding should cite KYC
-        account_ids = result.finding_to_citations.get("Elevated New Account Risk", [])
-        found_kyc = False
-        for cit in result.citations:
-            if cit.id in account_ids:
-                if "kyc" in cit.doc.lower() or "cdd" in cit.doc.lower():
-                    found_kyc = True
-        assert found_kyc, "Account finding should cite KYC"
+        # Account-age is contextual evidence -> NO citation (no KYC fallback)
+        age_ids = result.finding_to_citations.get("3. Account Age Context", [])
+        assert not age_ids, "Account-age finding must have no citation"
+        assert not any(
+            "kyc" in cit.doc.lower() for cit in result.citations
+        ), "Account-age finding must not cause a KYC citation"
 
 
 class TestGenericSectionFiltering:

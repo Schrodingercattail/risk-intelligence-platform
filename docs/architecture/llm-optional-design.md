@@ -1,328 +1,341 @@
-# Architecture Consistency Review Report
+# LLM Explanation Architecture
 
-**Date:** 2026-07-22
-**Project:** Risk Intelligence Platform
-**Purpose:** Ensure LLM is truly optional and ML-only mode works without dependencies
+Optional LLM narrative generation with canonical evidence, policy grounding, citation validation, deterministic fallback, and persisted canonical artifacts.
 
----
-
-## Executive Summary
-
-✅ **Architecture updated to make LLM truly optional.**
-
-The platform now has clear separation:
-- **Core ML Pipeline:** Always active, no external dependencies
-- **LLM Enhancement:** Optional, configuration-controlled
+This document describes how the LLM explanation layer fits into the Risk Platform architecture. Configuration numbers, latency/cost tables, and the full citation taxonomy live in the documents referenced at the end.
 
 ---
 
-## Files Modified
+## Architecture Boundary
 
-| File | Changes | Type |
-|------|---------|------|
-| **backend/app/config.py** | Added ENABLE_LLM_EXPLANATION flag (default: false) | Configuration |
-| **backend/app/api/routes/risk.py** | Added conditional LLM flow with model-based fallback | API Logic |
-| **README.md** | Updated "Model Explainability & AI Enhancement" section | Documentation |
-| **CLAUDE.md** | Updated "Optional Extension Services" section | Documentation |
+The LLM is an **explanation / narrative layer**. It is:
+
+- **NOT** the risk scoring engine
+- **NOT** an ML decision maker
+- **NOT** the Rule Engine
+- **NOT** the Graph detector
+- **NOT** the evidence source of truth
+- **NOT** the citation authority
+
+The core pipeline:
+
+```
+Raw Data
+  ↓
+Feature Engineering
+  ↓
+ML / Rule / Graph scoring          (deterministic, LLM-independent)
+  ↓
+Canonical Evidence                 (source of truth for the explanation layer)
+  ↓
+Unified Findings
+  ↓
+LLM Narrative / Deterministic Fallback
+  ↓
+Claim-level Citation
+  ↓
+Narrative Contract                 (backend-owned presentation invariants)
+  ↓
+Persisted Canonical Explanation
+```
+
+**Canonical Evidence is the source of truth for the explanation layer.** The LLM organizes supplied evidence and must not invent findings, infer rule triggers from scores, or choose citations.
 
 ---
 
-## Detailed Changes
+## Optional / Default / Fallback Semantics
 
-### 1. Configuration (backend/app/config.py)
+LLM integration is optional at the **deployment/configuration level**:
 
-**Added:**
+```
+ENABLE_LLM_EXPLANATION = true  AND  ANTHROPIC_API_KEY configured
+→ LLM is the DEFAULT explanation generator
+```
+
+When the LLM is unavailable, times out, or the provider call fails, the **deterministic model-based fallback** is used (`explanation_source = "MODEL_FALLBACK"`).
+
+Fallback is **not a separate explanation architecture** — it is the degradation path of the same pipeline. A fallback-generated explanation runs through the same citation assembly, narrative contract, and persistence, and becomes the canonical artifact for subsequent ordinary reads.
+
+Without any LLM configuration the platform operates fully on the deterministic path.
+
+---
+
+## Canonical Evidence
+
+`EvidenceService.get_canonical_evidence()` is the canonical evidence source for downstream explanation flows (LLM narrative, citation retrieval, investigation UI):
+
 ```python
-# LLM Configuration
-# ENABLE_LLM_EXPLANATION: Control whether LLM is used for explanation generation
-# Default: false (platform uses model-based explanations)
-# When true: Requires ANTHROPIC_API_KEY to be set
-ENABLE_LLM_EXPLANATION: bool = False
-```
-
-**Impact:** LLM usage is now explicitly controlled via configuration, defaulting to disabled.
-
----
-
-### 2. API Logic (backend/app/api/routes/risk.py)
-
-**Added:**
-- Helper function `_generate_model_based_explanation()` for model-based explanations
-- Conditional logic in `/explain` endpoint
-
-**New Flow:**
-```python
-if settings.ENABLE_LLM_EXPLANATION and settings.ANTHROPIC_API_KEY:
-    # LLM-enabled: Use LLM service for natural language summaries
-    llm_service = LLMExplanationService()
-    explanation = await llm_service.generate_explanation(...)
-else:
-    # Default: Generate model-based explanation from risk outputs
-    explanation = _generate_model_based_explanation(...)
-```
-
-**Failure Safety:**
-- LLM service has internal fallback (returns mock explanation on error)
-- API endpoint always returns valid ExplanationResponse
-- Risk scoring and event generation are unaffected
-
----
-
-### 3. Documentation Updates
-
-**README.md - New Section:** "Model Explainability & AI Enhancement"
-
-**Current ML Implementation:**
-- LightGBM risk scoring
-- Model-based explanations from risk outputs
-- Signal attribution and evidence factors
-- Investigation guidance
-
-**Optional AI Enhancement:**
-- ENABLE_LLM_EXPLANATION=true for natural language summaries
-- No API key required for core functionality
-- Architecture supports both modes
-
-**CLAUDE.md - Updated:** "Optional Extension Services" section
-
-**Configuration Control:**
-- Default behavior documented
-- LLM activation requirements clear
-- Failure safety explained
-
----
-
-## Runtime Behavior Changes
-
-### Before This Change
-
-1. LLM service was always instantiated in `/explain` endpoint
-2. Platform relied on llm_service fallback logic when no API key
-3. No explicit configuration control for LLM usage
-
-### After This Change
-
-1. LLM service is only instantiated when `ENABLE_LLM_EXPLANATION=true`
-2. Default mode uses dedicated `_generate_model_based_explanation()` function
-3. Clear configuration flag controls LLM behavior
-
-### Behavior Matrix
-
-| ENABLE_LLM_EXPLANATION | ANTHROPIC_API_KEY | Behavior |
-|------------------------|-------------------|-----------|
-| `false` (default) | Not set | Model-based explanations ✅ |
-| `false` | Set | Model-based explanations ✅ |
-| `true` | Not set | Model-based explanations ✅ |
-| `true` | Set | LLM-generated summaries ✅ |
-| `true` | Set (API fails) | Fallback to model-based ✅ |
-
-**Result:** Platform always works, LLM is purely additive.
-
----
-
-## Verification Steps
-
-### Step 1: Verify ML-Only Mode (Default)
-
-**Test Configuration:**
-```bash
-# .env file (or no .env file)
-# ENABLE_LLM_EXPLANATION=false  # or not set
-# ANTHROPIC_API_KEY=             # or not set
-```
-
-**Expected Behavior:**
-1. Start backend: `uvicorn app.main:app --reload`
-2. Run pipeline: Upload data → Run Risk Analysis
-3. Check Investigation page: Explanations display correctly
-4. Call `/api/risk/explain`: Returns model-based explanation
-
-**API Response Example:**
-```json
-{
-  "summary": "This account received a critical risk score (86.66/100). Primary concern: Suspicious trading pattern.",
-  "key_findings": [
-    "ML Signal Score: 95.41",
-    "Rule Engine Signal Score: 85.00",
-    "Elevated high_frequency_trading"
-  ],
-  "recommended_action": "Immediate Investigation"
+canonical_evidence = {
+    "ml": {
+        "score",            # 0-100 system signal
+        "probability",      # raw model output
+        "primary_driver",
+    },
+    "rules": {
+        "score",            # sum of triggered contributions, capped at 100
+        "triggered",        # [{rule_name, trigger, threshold, contribution, description}]
+        "consistent",       # derived evidence reconciles with the rule score
+    },
+    "graph": {
+        "score",
+        "has_evidence",
+        "connected_accounts",   # when graph evidence exists
+        "note",                 # explicit no-signal note when score = 0
+    },
+    "contextual": {
+        "account_age_days",
+        "account_age_note",
+    },
+    "findings": [ ... ],     # unified findings (see next section)
 }
 ```
 
-**Verification:**
-- ✅ Platform starts without errors
-- ✅ Risk scoring works normally
-- ✅ Explanations display in Investigation UI
-- ✅ No API key required
+**Semantics:**
 
-### Step 2: Verify LLM-Enabled Mode (Optional)
+- **ML**: a system signal / prioritization measure — *not* a calibrated probability of fraud. The ML detector score and individual feature findings are different levels; ML score visibility never claims ML "detected" a specific feature finding.
+- **Rules**: deterministic rules derived from actual feature values (`_derive_rule_evidence()`, kept aligned with `RiskScoringService._calculate_rule_score()`). Each triggered rule carries its observed values, threshold, and contribution; the LLM never infers rules from the rule score.
+- **Graph**: relationship evidence only when actual graph evidence exists. `graph_score = 0` means "no detected graph signal" — no inference of isolation, evasion, or "lone wolf" behavior.
+- **Contextual**: account age and similar context. Contextual evidence does not automatically become a policy-backed risk (see Citation Architecture).
 
-**Test Configuration:**
-```bash
-# .env file
-ENABLE_LLM_EXPLANATION=true
-ANTHROPIC_API_KEY=your_anthropic_api_key_here
-```
+### RiskFactor Semantics
 
-**Expected Behavior:**
-1. Restart backend
-2. Call `/api/risk/explain`: Returns natural language summary
-3. LLM API failure: Falls back to model-based
+`RiskFactor` rows are **persisted feature-level / contextual descriptive evidence**:
 
-**API Response Example (LLM):**
-```json
-{
-  "summary": "This account shows critical risk indicators based on multiple detection signals. The ML model has identified high-frequency trading patterns... [natural language text]",
-  "key_findings": [
-    "Elevated trading frequency detected (95+ trades in 24h)",
-    "Multiple risk rule triggers including new account + high activity",
-    "Connected to suspicious network cluster"
-  ],
-  "recommended_action": "Immediate investigation recommended due to coordinated fraud indicators"
-}
-```
+- RiskFactor ≠ ML finding
+- RiskFactor ≠ Rule trigger
+- RiskFactor ≠ Graph finding
 
-**Verification:**
-- ✅ LLM generates natural language when enabled
-- ✅ Falls back gracefully on API error
-- ✅ Risk scoring unaffected
-
-### Step 3: Verify Failure Safety
-
-**Test Scenarios:**
-1. Invalid API key: Should fall back to model-based
-2. LLM API timeout: Should fall back to model-based
-3. Network error: Should fall back to model-based
-
-**Verification:**
-- ✅ No API errors propagate to frontend
-- ✅ Investigation page continues to work
-- ✅ Risk scoring pipeline unaffected
+A feature used by the ML model does not mean ML independently detected that finding. This distinction matters: an earlier iteration of the architecture incorrectly treated non-account-age RiskFactors as ML findings; the current architecture does not.
 
 ---
 
-## Architecture Verification
+## Unified Findings
 
-### Component Dependency Graph
+**Finding** and **detection source** are separate dimensions. The user-facing narrative presents a single unified list — **Key Risk Findings** — not separate "ML findings / Rule findings / Graph findings" buckets.
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    RISK SCORING PIPELINE                      │
-│  (Always Active - No External Dependencies)                  │
-├─────────────────────────────────────────────────────────────┤
-│  Feature Engineering → ML Scoring → Rule Engine → Graph      │
-│  → Signal Fusion → Risk Event → Evidence Attribution         │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    EXPLAINABILITY LAYER                       │
-├─────────────────────────────────────────────────────────────┤
-│                                                               │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │ MODEL-BASED EXPLANATION (Default)                     │  │
-│  │ - Extract ML/Rule/Graph scores                       │  │
-│  │ - Build structured summary                            │  │
-│  │ - No external dependencies                            │  │
-│  └──────────────────────────────────────────────────────┘  │
-│                                                               │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │ LLM-ENHANCED EXPLANATION (Optional)                   │  │
-│  │ - ENABLE_LLM_EXPLANATION=true                         │  │
-│  │ - Requires ANTHROPIC_API_KEY                          │  │
-│  │ - Falls back to model-based on error                  │  │
-│  └──────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
-```
+A finding may carry multiple internal `detection_sources`:
 
-### Key Architectural Principles
+- *High Trading Frequency* → rule and/or feature provenance
+- *Shared Device Relationships* → graph and feature provenance
 
-1. **Separation of Concerns**
-   - Risk scoring is independent of explanation generation
-   - Explainability layer is a separate concern
-
-2. **Graceful Degradation**
-   - LLM failure does not break core functionality
-   - Model-based explanation is always available
-
-3. **Configuration Control**
-   - Explicit flag controls LLM usage
-   - Default behavior requires no external dependencies
-
-4. **API Contract Stability**
-   - Same response format in both modes
-   - Frontend works identically
-   - No breaking changes
+`detection_sources` are **internal provenance**. They are never exposed in the narrative as "detected by Feature/Rule/Graph/ML" labels. The backend builds the unified finding list and deduplicates semantically equivalent findings (one conceptual finding appears once, with merged sources).
 
 ---
 
-## What Was NOT Modified
+## LLM Generation Responsibility
 
-### Confirmed: No Breaking Changes
+The LLM receives the canonical structured evidence and is responsible for:
 
-✅ No database schema modifications
-✅ No ML behavior changes
-✅ No risk scoring algorithm changes
-✅ No frontend logic changes
-✅ No API response contract changes
-✅ No routing changes
+- Natural-language organization of the supplied findings
+- Calibrated, investigation-oriented wording
+- Summary generation and finding presentation
+- Action wording (review/validation-oriented, no enforcement claims)
 
-**Only affected:**
-- `/explain` endpoint implementation detail (internal logic change)
-- Configuration (new optional flag)
-- Documentation (clarification)
+The LLM is **not** responsible for:
 
----
+- Inferring rule triggers from the rule score
+- Inventing evidence or unsupported fraud typologies
+- Deciding which citation to use
+- Numbering findings or actions
+- Inserting citation markers
 
-## Final Positioning Verification
-
-### Title & Identity
-
-✅ **Correct:**
-- Risk Intelligence Platform
-- Machine Learning–Driven Detection, Monitoring & Investigation
-- Model Explainability (current implementation)
-- LLM Enhancement (optional)
-
-❌ **Avoided:**
-- Positioning as "AI-powered" in current implementation context
-- LLM as requirement for core functionality
-- Automated decision-making language
-
-### One-Sentence Description
-
-✅ **Verified:**
-
-"A risk intelligence platform that combines machine learning models, rule engines, graph signals, monitoring systems, and explainability workflows to support investigation across risk-sensitive industries."
+The **backend** owns: finding numbering, action numbering, citation numbering, contribution scrubbing, detection-source scrubbing, and all narrative invariants.
 
 ---
 
-## Ready for Release
+## Narrative Contract
 
-✅ **Architecture verified for LLM-optional operation**
-✅ **ML-only mode works without external dependencies**
-✅ **Configuration control clearly documented**
-✅ **Failure safety ensured**
-✅ **No breaking changes to core functionality**
+The backend enforces a deterministic, case-invariant presentation contract (`narrative_contract.py`). The LLM does not own numbering or formatting.
 
-### Recommendation
+Stable structure:
 
-The repository is ready for public release with:
+### What this means (Policy-backed)
+High-level risk interpretation.
 
-1. **Default Configuration:** ML-only mode (no API key required)
-2. **Optional Enhancement:** LLM integration for natural language summaries
-3. **Clear Documentation:** Separation of core ML from optional AI features
-4. **Failure Safety:** Platform works regardless of LLM availability
+### Key Risk Findings
+Evidence-backed findings, each with observed evidence.
 
-**Configuration for Release:**
-```bash
-# .env.example
-ENABLE_LLM_EXPLANATION=false
-# ANTHROPIC_API_KEY=  # Optional, only if ENABLE_LLM_EXPLANATION=true
+### Next Actions (SOP-aligned)
+Investigation-oriented action steps.
+
+**Contract rules:**
+
+- Findings numbered `1..N`; actions independently numbered `1..M` (always restarting at 1)
+- Finding numbering and citation numbering are independent
+- No contribution values in the default narrative (retained in Canonical Evidence)
+- No raw implementation thresholds; no raw feature names unless justified
+- No user-facing detection-source labels
+- Graph-zero is neutral context (folded into the summary), not a numbered finding
+- Findings without direct policy support may remain uncited
+
+---
+
+## Citation Architecture
+
+```
+Canonical Finding
+  ↓
+Claim refinement
+  ↓
+Semantic domain classification
+  ↓
+Policy retrieval (scoped)
+  ↓
+Claim-level validation
+  ↓
+Citation attachment if supported
 ```
 
-This ensures:
-- Out-of-the-box functionality
-- No external API dependencies
-- Clear path for users who want LLM enhancement
+**Core principle: no citation is better than a wrong citation.** A finding may exist without a citation.
+
+Currently allowed to remain uncited (no directly matching policy in the corpus):
+
+- First withdrawal to new address
+- Coordinated trading (opposite-trade ratio)
+- The new-account rule (corpus section on transfers-after-onboarding does not support the young-account AND high-trading conjunction)
+
+Additional guarantees:
+
+- Contextual account age does not automatically receive a KYC/CDD citation
+- Graph-zero never receives a citation (absence of signal is not a policy-backed finding)
+- The citation's quote must support the finding's **exact claim** — domain membership alone is insufficient
+- Every finding in the final list keeps its number regardless of citation presence; citation IDs form their own contiguous sequence
+
+---
+
+## Persisted Canonical Explanation
+
+Explanations are persisted case artifacts, served through three tiers:
+
+```
+Request
+  ↓
+Version Fingerprint
+  ↓
+Tier 1: In-memory TTL cache        (performance layer)
+  ↓ miss / expiry
+Tier 2: Persisted Artifact         (case_explanations table — canonical, NOT a cache)
+  ↓ absent / stale
+Tier 3: Generate + Persist         (LLM or deterministic fallback)
+```
+
+- **Tier 1** is a pure performance layer; TTL expiry falls through to Tier 2 and never triggers generation.
+- **Tier 2** is the **canonical artifact** — one row per `(user_id, audience)` in `case_explanations`. It survives restarts and cache expiry; ordinary reads return it without any model call. It is not merely a cache: it *is* the current canonical explanation for the case version.
+- **Tier 3** is the generation path: canonical evidence → LLM/fallback → claim-level citation assembly → narrative contract → persist as the new canonical artifact.
+
+**Ordinary read** (`POST /api/risk/explain`): cache → persisted artifact → no generation when a valid artifact exists.
+
+**Explicit regeneration** (`POST /api/risk/explain/regenerate`): bypasses the read tiers → generation → citation/narrative pipeline → persist → return.
+
+`bypass_cache=true` on the ordinary endpoint skips only Tier 1; the persisted artifact may still serve the request.
+
+### Version Fingerprint
+
+```
+version_fingerprint = sha256(
+    audience | risk_event_id | pipeline_run_id | model_version | policy_version
+)
+```
+
+The fingerprint identifies the case/version context for which a persisted explanation is valid. A new pipeline run, a different model version, or a **`policy_version` change** invalidates the artifact context — the next ordinary read regenerates. (Validity is based on the `policy_version` value participating in the fingerprint, not on automatic detection of policy-file content changes.)
+
+---
+
+## Explicit Regeneration
+
+From the Investigation UI, users can select **"Regenerate with LLM"** (Policy-backed Narrative header, next to the source badge). The button calls the existing `POST /api/risk/explain/regenerate`.
+
+Regeneration:
+
+- Regenerates the **explanation only**
+- Does **NOT** rerun ML scoring, rule scoring, graph scoring, or final risk score fusion — the risk event's scores and risk level remain unchanged
+- Replaces the current canonical artifact
+- Ordinary page opens never regenerate implicitly
+
+UI helper text: *"Regenerates the explanation only; risk scores are not recalculated."*
+
+---
+
+## LLM Response Handling
+
+Anthropic-compatible responses may contain multiple content blocks. The current provider implementation extracts the first block of type `text` rather than assuming the first content block is the final response.
+
+- Thinking/reasoning blocks may precede the text block; the parser tolerates this response shape.
+- A malformed response containing no text block raises a clear provider error and triggers the normal fallback path.
+
+---
+
+## Timeout & Reliability
+
+```
+EXPLAIN_LLM_TIMEOUT_SECONDS = 30   # current default
+```
+
+- Application-level timeout around the **LLM provider call** — not the total HTTP request SLA
+- Configurable through environment/settings
+- Reasoning/thinking-capable gateways may need longer execution windows (reason for the 30s default)
+- Timeout triggers the deterministic fallback path
+
+---
+
+## Observability
+
+Explanation-specific metrics (`/api/risk/metrics/explain`):
+
+| Metric | Meaning |
+|--------|---------|
+| `llm_total` | Successful LLM generations |
+| `fallback_total` | Deterministic-fallback generations (`llm_disabled_total` + `llm_failed_total`) |
+| `persisted_total` | Reads served from the persisted canonical artifact |
+| `cache_hit_total` / `cache_miss_total` | Tier 1 performance |
+| `latency_ms_p50/p95/avg` | Latency percentiles |
+| `requests_total` / `error_total` / `rate_limited_total` | Request counters |
+
+**`persisted_total` is not an LLM generation count.** Ordinary persisted reads do not increment generation counters — generations and reads are counted independently.
+
+---
+
+## Cost & Latency Relationship
+
+At the architecture level:
+
+- **Cache** (Tier 1) is a performance optimization
+- **Persistence** (Tier 2) provides canonical artifact stability and generation avoidance — ordinary reads of the same case do not repeatedly invoke the LLM
+- **Explicit regeneration** is the intentional path for a new generation
+
+Detailed latency budgets, tuning tables, and cost analysis: [`docs/cost-latency-strategy.md`](../cost-latency-strategy.md).
+
+---
+
+## Design Rationale
+
+1. **Canonical Evidence before LLM** — prevents the LLM from becoming an evidence source; scoring stays deterministic and auditable.
+2. **Unified Findings** — prevents ML/Rule/Graph presentation duplication; one conceptual finding appears once.
+3. **Claim-level citation** — avoids false policy grounding; unsupported findings stay uncited rather than mis-cited.
+4. **Persisted canonical artifact** — prevents repeated generation and narrative instability across reloads/restarts.
+5. **Explicit regeneration** — narrative changes are intentional user actions, never side effects of cache expiry.
+6. **Deterministic fallback** — the platform remains fully functional without LLM availability.
+7. **Backend-owned narrative contract** — presentation structure does not drift with LLM output formatting.
+
+---
+
+## Historical Design Notes
+
+The following records earlier review/decision context and is retained for architectural history; it does not describe additional current behavior beyond the sections above.
+
+### Grounding Contract (P2)
+
+An earlier review established the grounding rules now embodied in the prompt and narrative contract: evidence boundary (no invented factors/typologies), account-age as contextual evidence, ML/Graph score semantics (scores are signals; graph zero draws no conclusions), calibrated language, and the investigation-support boundary (no enforcement claims, no "policy requires" wording for unsupported findings). These rules remain in force and are enforced by both the prompt and the backend narrative contract.
+
+### Configuration review
+
+A prior consistency review confirmed: risk scoring is independent of explanation generation; the platform operates in ML-only mode without external dependencies; the `/explain` response contract is identical in LLM and fallback modes; LLM failure degrades gracefully without affecting scoring. Those properties still hold under the current architecture.
+
+---
+
+## Related Documentation
+
+- [README](../../README.md) — product-level architecture, Canonical Evidence, Narrative Contract, persistence overview
+- [Cost & Latency Strategy](../cost-latency-strategy.md) — latency budgets, cache/persistence tuning, cost analysis
+- [Citation System Design](citation-system-design.md) — citation pipeline components
+- [Data Contract](../data-contract.md) — API schemas

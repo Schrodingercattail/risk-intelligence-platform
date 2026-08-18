@@ -234,7 +234,13 @@ class ClaudeProvider(LLMProvider):
         prompt: str,
         system_prompt: Optional[str] = None
     ) -> str:
-        """Generate explanation using Claude API."""
+        """Generate explanation using Claude API (or Anthropic-compatible gateway).
+
+        The response content is a list of blocks that may include non-text
+        blocks (e.g. type='thinking' blocks returned by some gateways/models,
+        whose .text is None), so the first text block is located by type rather
+        than assumed to be content[0].
+        """
         message = self.client.messages.create(
             model=settings.ANTHROPIC_MODEL,
             max_tokens=settings.LLM_MAX_TOKENS,
@@ -245,10 +251,18 @@ class ClaudeProvider(LLMProvider):
             ]
         )
 
-        return message.content[0].text
+        for block in message.content:
+            if getattr(block, "type", None) == "text":
+                return block.text
+
+        raise ValueError(
+            "LLM response contained no text content block "
+            f"(block types: {[getattr(b, 'type', type(b).__name__) for b in message.content]}); "
+            "cannot extract explanation text"
+        )
 
     def _default_system_prompt(self) -> str:
-        """Default system prompt for risk analyst role."""
+        """Default system prompt for risk analyst role, including the grounding contract."""
         return """You are an expert risk analyst for a risk intelligence platform. Your role is to:
 
 1. Analyze risk data and explain findings clearly
@@ -260,7 +274,31 @@ When explaining risk, always:
 - Start with a clear summary
 - List specific findings with evidence
 - End with a recommended action
-- Keep explanations concise but thorough"""
+- Keep explanations concise but thorough
+
+GROUNDING CONTRACT (must follow):
+1. Evidence boundary: State ONLY risk factors that are explicitly present in the supplied
+   evidence. Do not invent additional risk factors, behavioral mechanisms, or fraud typologies.
+2. Account age: Treat account age as CONTEXTUAL EVIDENCE unless an explicit rule trigger is
+   supplied. Do not infer "new account risk", "sleeper account", deliberate aging, or similar
+   narratives from account age alone, and do not invent age thresholds. The only account-age
+   rule is "New account with high activity" (requires BOTH young age AND high activity); unless
+   that rule is stated as triggered in the evidence, account age is just context.
+3. Risk score semantics: Treat ML/Rule/Graph values as SYSTEM SCORES / SIGNALS, not calibrated
+   probabilities. Do not describe an ML score as a probability of fraud unless the supplied
+   evidence explicitly says it is a probability. Never present a high score as proof or
+   certainty of malicious intent.
+4. Graph score semantics: Graph Score = 0 means NO detected graph signal. Do not infer "lone
+   wolf", "isolated/hidden infrastructure", VPN/OpSec/evasion, or similar from a zero graph
+   score unless explicit supporting evidence is supplied.
+5. Fraud typology calibration: Do not introduce money laundering, botnet, sleeper account,
+   synthetic identity, bonus abuse, wash trading, layering, or other specific typologies
+   unless they are explicitly supported by the supplied evidence. Use calibrated language
+   ("indicates", "is consistent with", "may suggest", "requires investigation") instead of
+   presenting hypotheses as confirmed facts.
+6. Investigation boundary: This platform is an INVESTIGATION SUPPORT system, not an automatic
+   enforcement system. Prioritize review/validation steps in recommendations, and never
+   present an unverified fraud hypothesis as established fact."""
 
 
 class OpenAIProvider(LLMProvider):
@@ -315,6 +353,7 @@ class LLMExplanationService:
         risk_event: Dict[str, Any],
         risk_factors: List[Dict[str, Any]],
         graph_data: Optional[Dict[str, Any]] = None,
+        canonical_evidence: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Generate AI-powered investigation explanation.
@@ -324,6 +363,11 @@ class LLMExplanationService:
             risk_event: Risk event data with scores
             risk_factors: List of risk factor details
             graph_data: Optional relationship graph data
+            canonical_evidence: Optional canonical structured evidence from
+                EvidenceService.get_canonical_evidence() — the authoritative
+                ml/rules/graph/contextual evidence. When supplied, the LLM is
+                asked to organize THIS evidence rather than infer meaning from
+                the component scores alone.
 
         Returns:
             Dict with summary, key_findings, recommended_action, explanation_source, and llm_error
@@ -335,7 +379,10 @@ class LLMExplanationService:
             )
 
         # Construct prompt
-        prompt = self._construct_prompt(user_id, risk_event, risk_factors, graph_data)
+        prompt = self._construct_prompt(
+            user_id, risk_event, risk_factors, graph_data,
+            canonical_evidence=canonical_evidence,
+        )
 
         # Generate explanation with timeout protection
         try:
@@ -371,12 +418,58 @@ class LLMExplanationService:
                 risk_event, risk_factors, explanation_source="MODEL_FALLBACK", llm_error=short_error
             )
 
+    # Natural-language renderings for raw feature field names (presentation
+    # layer only — Canonical Evidence keeps the raw values for audit).
+    _FIELD_LANGUAGE = {
+        "account_age_days": "the account is {value} days old",
+        "trade_frequency_24h": "{value} trades were recorded in 24 hours",
+        "withdrawal_frequency_24h": "{value} withdrawals were recorded in 24 hours",
+        "first_withdrawal_flag": "a first withdrawal to a new address was detected",
+        "opposite_trade_ratio": "an opposite-trade ratio of {pct}% was observed",
+        "shared_device_count": "{value} linked account(s) through shared devices",
+        "connected_accounts": "{value} connected accounts were detected",
+        "ml_score": "ML signal of {value}/100",
+    }
+
+    def _humanize_observed(self, finding_name: str, observed: Dict[str, Any]) -> str:
+        """
+        Render observed values as investigator-facing natural language.
+
+        Hides raw field names / implementation detail ("account_age_days = 6")
+        in favor of business language ("the account is 6 days old"). Values
+        are preserved exactly; only the presentation changes.
+        """
+        if not isinstance(observed, dict) or not observed:
+            return str(observed) if observed else ""
+
+        parts = []
+        for key, value in observed.items():
+            template = self._FIELD_LANGUAGE.get(key)
+            if template is None:
+                parts.append(f"{key} = {value}")
+                continue
+            if key == "first_withdrawal_flag":
+                if value:
+                    parts.append(template)
+            elif key == "opposite_trade_ratio":
+                try:
+                    parts.append(template.format(pct=f"{float(value) * 100:.2f}"))
+                except (TypeError, ValueError):
+                    parts.append(f"{key} = {value}")
+            else:
+                try:
+                    parts.append(template.format(value=value))
+                except (TypeError, ValueError):
+                    parts.append(f"{key} = {value}")
+        return "; ".join(parts)
+
     def _construct_prompt(
         self,
         user_id: str,
         risk_event: Dict[str, Any],
         risk_factors: List[Dict[str, Any]],
         graph_data: Optional[Dict[str, Any]] = None,
+        canonical_evidence: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Construct the LLM prompt from structured data with privacy sanitization."""
         # Sanitize all inputs before prompt construction
@@ -394,6 +487,68 @@ class LLMExplanationService:
             f"- Rule Score: {sanitized_risk_event.get('rule_score', 'N/A')}",
             f"- Graph Score: {sanitized_risk_event.get('graph_score', 'N/A')}\n",
         ]
+
+        # Canonical structured evidence — the authoritative explanation input.
+        # When present, the LLM organizes THIS evidence instead of guessing what
+        # the component scores mean.
+        if canonical_evidence:
+            prompt_parts.append("### Canonical Evidence (authoritative — organize this, do not invent beyond it)")
+
+            ml = canonical_evidence.get("ml")
+            if ml:
+                prompt_parts.append(
+                    f"- ML pattern detection score: {ml.get('score')}/100 "
+                    f"(system signal, not a calibrated probability; primary driver: "
+                    f"{ml.get('primary_driver')})"
+                )
+
+            rules = canonical_evidence.get("rules")
+            if rules:
+                prompt_parts.append(
+                    f"- Rule engine: score {rules.get('score')} (deterministic rules triggered below)"
+                )
+                for r in (rules.get("triggered") or []):
+                    prompt_parts.append(
+                        f"  - Triggered rule \"{r.get('rule_name')}\": "
+                        f"{self._humanize_observed(r.get('rule_name', ''), r.get('trigger') or {})}"
+                    )
+
+            graph = canonical_evidence.get("graph")
+            if graph:
+                if graph.get("has_evidence"):
+                    prompt_parts.append(
+                        f"- Graph detection: score {graph.get('score')}, connected accounts: {graph.get('connected_accounts')}"
+                    )
+                else:
+                    prompt_parts.append(
+                        f"- Graph detection: score 0 — {graph.get('note')}"
+                    )
+
+            ctx = canonical_evidence.get("contextual")
+            if ctx and ctx.get("account_age_days") is not None:
+                prompt_parts.append(
+                    f"- Contextual: the account is {ctx.get('account_age_days')} days old "
+                    "(contextual evidence only; the system's only new-account rule requires "
+                    "both a very young account AND high trading activity)"
+                )
+
+            findings = canonical_evidence.get("findings") or []
+            if findings:
+                prompt_parts.append("- Key Risk Findings (investigation-oriented, user-facing):")
+                for f in findings:
+                    # Presentation layer: investigators see natural language.
+                    # Raw field names, threshold expressions and score
+                    # contributions stay in Canonical Evidence (audit/debug).
+                    name = f.get("name", "")
+                    # Withdrawal-behavior sub-score is not independently
+                    # actionable for investigators (its drivers — frequency,
+                    # first withdrawal — are already listed as findings);
+                    # omit from the narrative, keep in canonical evidence.
+                    if name == "Abnormal Withdrawal Behavior":
+                        continue
+                    observed = f.get("observed_value") or {}
+                    prompt_parts.append(f"  - {name} (evidence: {self._humanize_observed(name, observed)})")
+            prompt_parts.append("")
 
         if sanitized_risk_factors:
             prompt_parts.append("### Key Risk Factors")
@@ -418,48 +573,136 @@ class LLMExplanationService:
             "3. A recommended action for the investigation team",
             "",
             "Format your response clearly with sections for Summary, Key Findings, and Recommended Action.",
+            "",
+            "Finding organization rules:",
+            "- Present ONE unified list of \"Key Risk Findings\" (not separate",
+            "  ML/Rule/Graph sections). Each numbered finding = a short title line,",
+            "  then one natural-language sentence of what was observed and why it",
+            "  matters, in calibrated investigation wording.",
+            "- Write findings in INVESTIGATOR language, never scoring-console language:",
+            "  * NEVER state score contributions of any kind.",
+            "  * NEVER print raw threshold expressions, comparisons or snake_case",
+            "    field names — express each rule's meaning in plain words using the",
+            "    observed values given in the evidence lines (e.g. \"The account is",
+            "    6 days old and recorded 54 trades in 24 hours, satisfying the",
+            "    system's new-account/high-activity rule.\" or \"7 withdrawals were",
+            "    recorded in 24 hours, exceeding the system's threshold for",
+            "    elevated withdrawal frequency.\")",
+            "  * NEVER show \"withdrawal risk score = N\" or any raw sub-score for",
+            "    withdrawal behavior; describe behavior in business terms.",
+            "  * Calibrated interpretation only. An opposite-trade ratio is a single",
+            "    aggregate statistic: it does NOT show that the account offset another",
+            "    party's positions, nor confirm coordination/manipulation. Phrase it as",
+            "    e.g. \"An opposite-trade ratio of 34.38% was observed and may warrant",
+            "    further review for potentially coordinated trading behavior.\" —",
+            "    observed fact + \"may warrant further review\" + \"potentially\".",
+            "- NEVER mention HOW a finding was produced. Do not write any",
+            "  detection-source label (no ML/Rule/Graph/Feature provenance wording).",
+            "  Detection provenance is internal; investigators see findings, not pipelines.",
+            "- The ML detector is expressed ONLY as a detector-level signal statement",
+            "  (e.g. \"ML Pattern Detection — 99.41/100; a system signal, not a",
+            "  calibrated probability\") as the first finding; NEVER claim",
+            "  \"ML detected <feature finding>\".",
+            "- Do NOT add citation markers like [1] yourself — the system attaches",
+            "  policy citations afterwards. Do not delete or omit a finding.",
+            "- NEVER write \"policy requires/defines...\" for findings — policy",
+            "  grounding is attached by the system only where it exists.",
+            "- A finding supported by multiple sources appears ONCE.",
+            "- When canonical evidence lists graph detection with no signal, state only",
+            "  that no graph signal was detected — draw no conclusions from it.",
+            "- List each finding as its own line starting with \"- \" (hyphen).",
+            "  Put supporting sentences for the same finding on the following",
+            "  indented line(s). NEVER number findings or actions yourself and",
+            "  never use bold list markers — the backend adds all numbering.",
+            "  Action steps: one per line, each starting with \"- \".",
+            "- Cover ALL supplied canonical findings: you may merge duplicates",
+            "  and rephrase, but never drop a Rule finding, never mention a",
+            "  finding in the Summary without including it in Key Risk Findings.",
+            "  If evidence states no graph signal was detected, mention it at",
+            "  most briefly in the Summary — it is not a risk finding.",
         ])
 
         return "\n".join(prompt_parts)
 
     def _parse_explanation(self, text: str, risk_event: Dict[str, Any]) -> Dict[str, Any]:
-        """Parse LLM response into structured format."""
-        # Simple parsing - in production would use more sophisticated parsing
+        """
+        Parse the LLM response into summary / key_findings / recommended_action.
+
+        Structure-preserving parsing (no dependence on exact wording):
+        - section boundaries detected by heading words (Summary / Findings /
+          Recommended Action)
+        - findings accept BOTH bulleted lines ("- x", "* x") and numbered lines
+          ("1. x", "2. x"); continuation (unmarked) lines within the findings
+          section become supporting lines of the previous finding
+        - numbered action steps are preserved as separate lines with their
+          numbering (newlines kept) instead of being collapsed into one
+          paragraph
+        """
         lines = text.split('\n')
 
-        summary = ""
-        key_findings = []
-        recommended_action = ""
+        summary_lines = []
+        findings: List[str] = []
+        action_lines: List[str] = []
 
         current_section = None
         for line in lines:
-            line = line.strip()
-            if not line:
-                continue
+            stripped = line.strip()
 
-            # Detect section headers
-            if "summary" in line.lower():
+            # Section headers (structural markers, not exact wording).
+            # Headers are short heading-like lines containing the keyword.
+            # A bulleted ("- x") or numbered ("1. x") line is CONTENT even if
+            # it contains the keyword ("- finding one"), and '#' lines are
+            # headings even though they start with a marker.
+            def _is_header(candidate: str, keyword: str) -> bool:
+                if not candidate or len(candidate) > 60:
+                    return False
+                if keyword not in candidate.lower():
+                    return False
+                if candidate.startswith("#"):
+                    return True
+                if candidate.startswith(("-", "•", "*")) or re.match(r'^\d+[\.\)]\s', candidate):
+                    return False
+                return True
+
+            if current_section is None and _is_header(stripped, "summary") \
+                    and not findings and not action_lines:
                 current_section = "summary"
                 continue
-            elif "finding" in line.lower():
+            if current_section == "summary" and _is_header(stripped, "finding"):
                 current_section = "findings"
                 continue
-            elif "recommend" in line.lower():
+            if current_section in ("summary", "findings") and _is_header(stripped, "recommend"):
                 current_section = "action"
                 continue
 
-            # Accumulate content
             if current_section == "summary":
-                summary += line + " "
-            elif current_section == "findings" and line.startswith(("-", "•", "*")):
-                key_findings.append(line.lstrip("-•* "))
+                if stripped:
+                    summary_lines.append(stripped)
+            elif current_section == "findings":
+                if not stripped:
+                    continue
+                if stripped.startswith(("-", "•", "*")) or re.match(r'^\*{0,2}\d+[\.\)]\s+', stripped):
+                    # marked finding line (bullet or number) — marker stripped
+                    # later by the narrative contract; backend owns numbering
+                    findings.append(stripped.rstrip())
+                elif findings:
+                    # unmarked line after a finding: continuation (supporting
+                    # sentence of the same finding), e.g. "Evidence: ..."
+                    findings[-1] = findings[-1].rstrip() + "\n" + stripped
+                else:
+                    # unmarked line before any finding: prose intro, skip
+                    continue
             elif current_section == "action":
-                recommended_action += line + " "
+                if stripped:
+                    action_lines.append(stripped)
+
+        summary = " ".join(summary_lines).strip()
+        recommended_action = "\n".join(action_lines).strip()
 
         return {
-            "summary": summary.strip() or text[:200],  # Fallback to first 200 chars
-            "key_findings": key_findings or [risk_event.get("primary_reason", "Risk detected")],
-            "recommended_action": recommended_action.strip() or risk_event.get("recommended_action", "Further review needed"),
+            "summary": summary or text[:200].strip(),  # Fallback to first 200 chars
+            "key_findings": findings or [risk_event.get("primary_reason", "Risk detected")],
+            "recommended_action": recommended_action or risk_event.get("recommended_action", "Further review needed"),
         }
 
     def _model_based_explanation(

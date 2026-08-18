@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, List
 import time
 import hashlib
-from pathlib import Path
+import re
 from collections import OrderedDict
 
 from app.db.session import get_db
@@ -17,6 +17,11 @@ from app.services.graph_service import GraphAnalysisService
 from app.services.llm_service import LLMExplanationService, sanitize_policy_quote
 from app.services.policy_rag_service import PolicyRAGService
 from app.services.explain_metrics import get_explain_metrics as _get_explain_metrics, log_explain_request
+from app.services.explanation_store_service import (
+    ExplanationStoreService,
+    fingerprint_for_risk_event,
+    policy_version,
+)
 from app.services.citation_service import SimpleCitationService, create_simple_citation_service
 from app.services.citation_retrieval_service import CitationRetrievalService, create_citation_retrieval_service
 from app.services.data_quality_service import create_data_quality_service
@@ -209,38 +214,90 @@ class RateLimiter:
 _rate_limiter = RateLimiter(requests_per_minute=settings.EXPLAIN_RATE_LIMIT_PER_MIN)
 
 
-def _get_policy_version() -> str:
-    """Derive policy version from latest mtime of policy files."""
-    try:
-        policies_dir = Path(__file__).resolve().parents[3] / "policies"
-        if not policies_dir.exists():
-            return "no-policies"
+def _generate_cache_key(user_id: str, audience: str, fingerprint: str) -> str:
+    """
+    In-memory cache key for the read-through performance cache.
 
-        # Get latest mtime of any .md file
-        latest_mtime = 0
-        for p in policies_dir.glob("*.md"):
-            mtime = p.stat().st_mtime
-            if mtime > latest_mtime:
-                latest_mtime = mtime
-
-        return str(int(latest_mtime)) if latest_mtime > 0 else "empty-policies"
-    except Exception:
-        return "unknown"
-
-
-def _generate_cache_key(user_id: str, audience: str, risk_event: dict, cache_buster: str = "") -> str:
-    """Generate cache key from relevant fields."""
-    # Use key identifiers that affect explanation output
-    key_parts = [
-        user_id,
-        audience,
-        str(risk_event.get('pipeline_run_id', 'no-run')),
-        str(risk_event.get('model_version', 'no-model')),
-        _get_policy_version(),
-        cache_buster,  # For cache invalidation
-    ]
-    key_string = "|".join(key_parts)
+    The key includes the canonical version fingerprint (which folds in
+    audience / risk_event_id / pipeline_run_id / model_version /
+    policy_version), so a data-change naturally misses. Versioning and
+    invalidation are owned by ExplanationStoreService — this cache is a
+    performance layer only and never drives regeneration. There is no
+    cache_buster: forced regeneration is the explicit
+    POST /api/risk/explain/regenerate endpoint.
+    """
+    key_string = "|".join([user_id, audience, fingerprint])
     return hashlib.sha256(key_string.encode()).hexdigest()
+
+
+# A conceptual finding starts with a numbered header line ("1. ...",
+# optionally preceded by an opening bold marker). The dot must be followed by
+# whitespace so decimals like "96.24" never match.
+NUMBERED_FINDING_HEADER = re.compile(r"^\*{0,2}\d+\.\s+")
+
+
+def _conceptual_finding_headers(key_findings) -> list:
+    """
+    Return the representative (header) element of each conceptual finding.
+
+    The LLM may split ONE conceptual finding across multiple array elements:
+    a numbered header line ("1. ML Pattern Detection Signal") followed by
+    supporting lines. Citation assignment happens at the CONCEPTUAL-FINDING
+    level: only header elements are sent to citation retrieval (and therefore
+    only they receive citation markers), so a citation appears ONCE per finding
+    and supporting lines stay unmarked. When no numbered structure exists
+    (deterministic fallback output, one finding per element), every element is
+    its own finding and all are returned — legacy behavior is unchanged.
+    """
+    texts = [f for f in (key_findings or []) if isinstance(f, str) and f.strip()]
+    headers = [f for f in texts if NUMBERED_FINDING_HEADER.match(f.strip())]
+    return headers if headers else texts
+
+
+def _is_score_summary_finding(finding_text: str) -> bool:
+    """
+    Score-only findings are model-output metrics, not policy-backed
+    hypotheses: they NEVER receive citation markers (protected fallback
+    presentation contract, previously validated).
+    """
+    return (
+        finding_text.startswith("ML Signal Score:") or
+        finding_text.startswith("Rule Engine Signal Score:") or
+        finding_text.startswith("Graph Network Signal Score:")
+    )
+
+
+def _renumber_used_citations(marked_findings, candidate_citations):
+    """
+    Derive the FINAL citation set from the markers actually attached to the
+    rendered findings (separating final usage from candidate retrieval).
+
+    Protected contract for BOTH the fallback and LLM paths:
+    - only citations actually referenced by a trailing [n] marker in the final
+      findings remain in the citation list (no unused citation objects)
+    - citation IDs are contiguous starting at [1], ordered by first appearance
+    - retrieved-but-unmarked candidates are dropped. In particular, candidates
+      retrieved for score-summary findings never enter the final list, because
+      score summaries are never marked (see _is_score_summary_finding).
+
+    Returns:
+        (old_to_new_id, next_new_id) — mapping of candidate id -> final id and
+        the next free id (used for the SOP citation on recommended_action).
+    """
+    available_ids = {cit.get("id") for cit in (candidate_citations or [])}
+    old_to_new_id = {}
+    next_new_id = 1
+    for text in marked_findings or []:
+        if not isinstance(text, str):
+            continue
+        m = re.search(r'\[(\d+)\]\s*$', text)
+        if not m:
+            continue
+        old_id = int(m.group(1))
+        if old_id in available_ids and old_id not in old_to_new_id:
+            old_to_new_id[old_id] = next_new_id
+            next_new_id += 1
+    return old_to_new_id, next_new_id
 
 
 def _safe_dump(obj):
@@ -958,24 +1015,85 @@ async def generate_explanation(
     payload: ExplanationRequest,
     request: Request,  # Inject actual HTTP Request for headers/client IP (must come before query params with defaults)
     audience: str = Query("investigator", description="Audience mode: 'investigator' (default, full detail) or 'business' (reduced sensitive detail)"),
-    bypass_cache: bool = Query(False, description="Bypass cache and force fresh computation"),
+    bypass_cache: bool = Query(False, description="Skip the in-memory cache tier only; the persisted canonical explanation is still served (does NOT regenerate)"),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Generate risk explanation for investigation.
 
-    Behavior:
-    - Default: Returns model-based explanation from risk analysis outputs
-    - Optional (ENABLE_LLM_EXPLANATION=true): Uses LLM for natural language summaries
+    An explanation is a PERSISTED case artifact. Reads are served through tiers,
+    in order:
+    1. In-memory TTL cache — performance only; expiry NEVER triggers generation
+    2. Persisted canonical explanation (`case_explanations`) — stable across
+       backend restarts and page reopens; served as long as its version
+       fingerprint matches the current risk event (pipeline run / model /
+       policy unchanged)
+    3. Generation (LLM, or model-based fallback without LLM) — only when the
+       persisted explanation is absent or stale; the result is persisted as the
+       new canonical artifact
+
+    To force a NEW explanation, use the explicit POST /api/risk/explain/regenerate
+    endpoint. bypass_cache=true merely skips tier 1.
+
     - audience parameter controls output granularity:
       - investigator: Full citations with redacted quotes, detailed key_findings
       - business: Redacted quotes, reduced sensitive phrasing in key_findings
-    - Results are cached (TTL=600s) to reduce repeated computation
-    - Set bypass_cache=true to force fresh computation (useful for testing)
     - Rate limited to 30 requests/minute per client IP
 
     The platform operates fully without LLM integration.
     NOTE: This is a demo audience-based output mode; production should enforce RBAC via gateway/SSO.
+    """
+    return await _explain_request_flow(
+        payload=payload,
+        request=request,
+        audience=audience,
+        bypass_cache=bypass_cache,
+        force_regenerate=False,
+        db=db,
+    )
+
+
+@router.post("/explain/regenerate", response_model=ExplanationResponse)
+async def regenerate_explanation(
+    payload: ExplanationRequest,
+    request: Request,  # Inject actual HTTP Request for headers/client IP
+    audience: str = Query("investigator", description="Audience mode: 'investigator' (default, full detail) or 'business' (reduced sensitive detail)"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Explicitly regenerate the explanation for a case.
+
+    This is the ONLY way to force a new explanation when the persisted one is
+    still valid. Always generates fresh (LLM, or the deterministic model-based
+    fallback when LLM is unavailable), PERSISTS the result as the new canonical
+    explanation for (user_id, audience) — replacing the previous row — and
+    returns it. Normal reads (POST /explain, page reloads) never regenerate
+    implicitly.
+    """
+    return await _explain_request_flow(
+        payload=payload,
+        request=request,
+        audience=audience,
+        bypass_cache=True,        # skip the in-memory read tier
+        force_regenerate=True,    # and skip the persisted read tier: always generate
+        db=db,
+    )
+
+
+async def _explain_request_flow(
+    payload: ExplanationRequest,
+    request: Request,
+    audience: str,
+    bypass_cache: bool,
+    force_regenerate: bool,
+    db: AsyncSession,
+) -> ExplanationResponse:
+    """
+    Shared implementation for /explain (normal read) and /explain/regenerate.
+
+    Read tiers: in-memory TTL cache (perf only) -> persisted canonical
+    explanation -> generate + persist. force_regenerate skips both read tiers
+    and always generates, replacing the persisted artifact.
     """
     # Get metrics instance and start timing
     metrics = _get_explain_metrics()
@@ -1059,29 +1177,74 @@ async def generate_explanation(
         from datetime import datetime, timezone
         account_age = (datetime.now(timezone.utc) - user.account_created_time).days
 
-    # Check cache (before any expensive computation)
-    # Generate cache buster if bypass_cache is True
-    cache_buster = str(time.time()) if bypass_cache else ""
-    cache_key = _generate_cache_key(payload.user_id, audience, _safe_dump(RiskEventResponse.model_validate(risk_event).model_dump()), cache_buster)
-    cached_response = _explanation_cache.get(cache_key)
-    if cached_response is not None:
-        # Cache hit - metrics already tracked by cache.get()
-        latency_ms = (time.time() - start_time) * 1000
-        _safe_record_latency(metrics, latency_ms)
-        _safe_increment_metrics(metrics, "increment_success")
+    # ============================================================
+    # READ TIERS: in-memory cache -> persisted canonical artifact
+    # ============================================================
+    # Canonical version fingerprint for this case version (audience +
+    # risk_event identity + pipeline run + model + policy). The persisted
+    # explanation is valid only while this fingerprint is unchanged.
+    fingerprint = fingerprint_for_risk_event(risk_event, audience)
+    cache_key = _generate_cache_key(payload.user_id, audience, fingerprint)
+    store = ExplanationStoreService(db)
 
-        log_explain_request(
-            status_code=200,
-            latency_ms=latency_ms,
-            cache_hit=True,
-            rate_limited=False,
-            fallback_used=False,
-            explanation_source=cached_response.get("explanation_source"),
-            citations_count=len(cached_response.get("citations", [])),
-            audience=audience,
-            user_id=payload.user_id,
-        )
-        return ExplanationResponse(**cached_response)
+    # --- Tier 1: in-memory TTL cache (performance only) ---
+    # bypass_cache skips this tier only. force_regenerate (explicit
+    # /explain/regenerate) skips both read tiers.
+    if not bypass_cache and not force_regenerate:
+        cached_response = _explanation_cache.get(cache_key)
+        if cached_response is not None:
+            # Cache hit - metrics already tracked by cache.get()
+            latency_ms = (time.time() - start_time) * 1000
+            _safe_record_latency(metrics, latency_ms)
+            _safe_increment_metrics(metrics, "increment_success")
+
+            log_explain_request(
+                status_code=200,
+                latency_ms=latency_ms,
+                cache_hit=True,
+                rate_limited=False,
+                fallback_used=False,
+                explanation_source=cached_response.get("explanation_source"),
+                citations_count=len(cached_response.get("citations", [])),
+                audience=audience,
+                user_id=payload.user_id,
+            )
+            return ExplanationResponse(**cached_response)
+    else:
+        # Read tiers bypassed (explicit request): count as a cache miss.
+        _safe_increment_metrics(metrics, "increment_cache_miss")
+
+    # --- Tier 2: persisted canonical explanation ---
+    # A valid persisted artifact is served as-is: cache miss/expiry NEVER
+    # triggers an LLM generation. Skipped entirely for force_regenerate.
+    if not force_regenerate:
+        persisted_payload = await store.get_current(payload.user_id, audience, fingerprint)
+        if persisted_payload is not None:
+            # Seed the in-memory cache so subsequent reads are fast.
+            _explanation_cache.set(cache_key, persisted_payload)
+
+            latency_ms = (time.time() - start_time) * 1000
+            _safe_record_latency(metrics, latency_ms)
+            # Persisted read: observable via persisted_total; NOT a generation,
+            # so llm/fallback counters are untouched (no double counting).
+            _safe_increment_metrics(metrics, "increment_persisted")
+            _safe_increment_metrics(metrics, "increment_success")
+
+            log_explain_request(
+                status_code=200,
+                latency_ms=latency_ms,
+                cache_hit=False,
+                rate_limited=False,
+                fallback_used=False,
+                explanation_source=persisted_payload.get("explanation_source"),
+                citations_count=len(persisted_payload.get("citations", [])),
+                audience=audience,
+                user_id=payload.user_id,
+            )
+            return ExplanationResponse(**persisted_payload)
+
+    # --- Tier 3: generate (persisted explanation absent or stale, or explicit
+    # regeneration) and persist the result as the new canonical artifact ---
 
     # Get risk factors
     from app.models.database import RiskFactor
@@ -1104,6 +1267,21 @@ async def generate_explanation(
 
     # Generate explanation first (needed for finding-specific citation retrieval)
     # Default behavior: model-based explanation (no LLM dependency)
+
+    # Canonical structured evidence: the authoritative ml/rules/graph/contextual
+    # evidence (reuses EvidenceService derivation, aligned with the scorer) so
+    # the LLM organizes actual evidence instead of inferring meaning from the
+    # three component scores alone.
+    from app.services.evidence_service import EvidenceService
+    evidence_service = EvidenceService(db)
+    canonical_evidence = await evidence_service.get_canonical_evidence(
+        payload.user_id,
+        risk_event=risk_event,
+        risk_factors=[_safe_dump(f) for f in factors],
+        graph_data=_safe_dump(graph_data),
+        has_graph_evidence=has_graph_evidence,
+    )
+
     if settings.ENABLE_LLM_EXPLANATION and settings.ANTHROPIC_API_KEY:
         # LLM-enabled: Use LLM service for natural language summaries
         llm_service = LLMExplanationService()
@@ -1112,6 +1290,7 @@ async def generate_explanation(
             risk_event=_safe_dump(RiskEventResponse.model_validate(risk_event)),
             risk_factors=[_safe_dump(f) for f in factors],
             graph_data=_safe_dump(graph_data),
+            canonical_evidence=canonical_evidence,
         )
     else:
         # Default: Generate model-based explanation from risk outputs
@@ -1120,6 +1299,27 @@ async def generate_explanation(
             factors=[_safe_dump(f) for f in factors],
             graph_data=_safe_dump(graph_data),
         )
+
+    # ============================================================
+    # GLOBAL NARRATIVE CONTRACT (case-invariant presentation)
+    # ============================================================
+    # Deterministic, backend-owned presentation applied to EVERY explanation
+    # (LLM or fallback, any case) BEFORE citation retrieval:
+    # - findings/actions numbered by the backend (never the model); action
+    #   numbering is an independent scope restarting at 1
+    # - graph-score-0 informational notes extracted from findings (never a
+    #   positive finding, never cited) and folded into the summary
+    # - contribution points / detection-provenance wording scrubbed
+    # - list-style noise (bullets, bold numbering) normalized
+    from app.services.narrative_contract import apply_narrative_contract
+    explanation = apply_narrative_contract(
+        explanation,
+        canonical_finding_names=(
+            [f["name"] for f in (canonical_evidence.get("findings") or [])]
+            + [r["rule_name"] for r in
+               ((canonical_evidence.get("rules") or {}).get("triggered") or [])]
+        ),
+    )
 
     # ============================================================
     # CITATION GENERATION WITH DOMAIN ENFORCEMENT
@@ -1136,11 +1336,19 @@ async def generate_explanation(
     original_key_findings = [f for f in key_findings if isinstance(f, str)]
     citation_service = create_citation_retrieval_service()
 
-    logger.info(f"Processing {len(key_findings)} key_findings for citation generation")
+    # Citation assignment happens at the CONCEPTUAL-FINDING level: one numbered
+    # header ("1. ...") represents each finding; supporting lines receive no
+    # markers, so a citation appears once per finding, not on every sentence.
+    citation_targets = _conceptual_finding_headers(key_findings)
+
+    logger.info(
+        f"Processing {len(citation_targets)} conceptual findings "
+        f"(from {len(original_key_findings)} key_findings elements) for citation generation"
+    )
 
     # Generate citations with domain enforcement
     retrieval_result = citation_service.retrieve_citations(
-        key_findings=key_findings,
+        key_findings=citation_targets,
         ml_score=risk_event.ml_score,
         rule_score=risk_event.rule_score,
         graph_score=risk_event.graph_score,
@@ -1177,14 +1385,8 @@ async def generate_explanation(
         for i, finding_text in enumerate(key_findings):
             if isinstance(finding_text, str):
                 # Skip citation attachment for score summaries
-                # Check if the finding starts with any score summary pattern
-                is_score_summary = (
-                    finding_text.startswith("ML Signal Score:") or
-                    finding_text.startswith("Rule Engine Signal Score:") or
-                    finding_text.startswith("Graph Network Signal Score:")
-                )
-
-                if is_score_summary:
+                # (model-output metrics — protected fallback contract)
+                if _is_score_summary_finding(finding_text):
                     logger.info(f"Skipped citation for score summary: '{finding_text}'")
                     continue
 
@@ -1193,8 +1395,13 @@ async def generate_explanation(
                 if citation_id:
                     key_findings[i] = finding_text.rstrip() + f" [{citation_id}]"
                     logger.debug(f"Attached citation [{citation_id}] to finding '{finding_text[:50]}...'")
-                else:
-                    logger.warning(f"No citation for finding: '{finding_text[:50]}...'")
+                elif finding_text in citation_targets:
+                    # Only warn for conceptual-finding headers: supporting lines
+                    # are expected to carry no citation marker.
+                    logger.info(
+                        f"No domain-relevant citation for finding '{finding_text[:50]}...' "
+                        f"(no fallback citation is attached)"
+                    )
 
     # ============================================================
     # CITATION FILTERING
@@ -1225,42 +1432,19 @@ async def generate_explanation(
             removed_ids.add(cit["id"])
 
     # ============================================================
-    # RE-ORDER CITATIONS FOR FRONTEND DISPLAY
+    # FINAL CITATION USAGE + RENUMBERING
     # ============================================================
-    # Frontend filters out score-related findings from "Top Risk Hypotheses"
-    # Goals:
-    # 1. Citations should be [1], [2], [3]... without gaps in visible content
-    # 2. Citations list should be sorted by ID
-    # 3. Citation IDs assigned by chunk's FIRST appearance order (multiple findings can share same ID)
-
-    def is_score_related_finding(finding_text: str) -> bool:
-        """Check if a finding is score-related (filtered by frontend)."""
-        score_keywords = ['score', 'signal', 'ml ', 'rule ', 'graph ', 'probability', 'threshold']
-        finding_lower = finding_text.lower()
-        # Match the frontend's filterKeyFindings logic
-        return any(keyword in finding_lower for keyword in score_keywords)
-
-    # Build old_to_new_id mapping based on ORDER of chunk's FIRST appearance in visible findings
-    old_to_new_id = {}
-    next_new_id = 1
-    seen_chunks = set()
-
-    # Use original_key_findings (saved before citation marks were attached)
-    for finding_text in original_key_findings:
-        if not isinstance(finding_text, str):
-            continue
-
-        # Only process visible (non-score) findings
-        if is_score_related_finding(finding_text):
-            continue
-
-        # Get the old citation ID (which maps to a citation chunk)
-        old_citation_id = finding_to_citation.get(finding_text)
-        if old_citation_id and old_citation_id not in seen_chunks:
-            # First time we see this citation chunk - assign next sequential ID
-            old_to_new_id[old_citation_id] = next_new_id
-            seen_chunks.add(old_citation_id)
-            next_new_id += 1
+    # The final citation list is derived from the markers ACTUALLY ATTACHED to
+    # the rendered findings (not from retrieval candidates):
+    # - fallback contract: score-summary findings carry no markers, so the
+    #   citations retrieved for them never enter the final list
+    # - LLM path: only conceptual-finding headers carry markers
+    # - IDs are contiguous from [1], ordered by first appearance; the SOP
+    #   citation appended to recommended_action takes the next free ID
+    old_to_new_id, next_new_id = _renumber_used_citations(
+        marked_findings=key_findings,
+        candidate_citations=filtered_citations,
+    )
 
     # Filter and renumber citations
     visible_citations = []
@@ -1291,11 +1475,8 @@ async def generate_explanation(
                 clean_text = re.sub(r'\s*\[\d+\]$', '', finding_text)
 
                 # Skip citation attachment for score summaries
-                is_score_summary = (
-                    clean_text.startswith("ML Signal Score:") or
-                    clean_text.startswith("Rule Engine Signal Score:") or
-                    clean_text.startswith("Graph Network Signal Score:")
-                )
+                # (model-output metrics — protected fallback contract)
+                is_score_summary = _is_score_summary_finding(clean_text)
 
                 new_citation_id = updated_finding_to_citation.get(clean_text)
                 if new_citation_id and not is_score_summary:
@@ -1329,8 +1510,13 @@ async def generate_explanation(
     # ============================================================
     # ADD SOP CITATION FOR ACTIONS
     # ============================================================
-    # Add Investigation_and_Action_SOP.md citation for recommended_action
-    if filtered_citations and isinstance(explanation.get("recommended_action"), str):
+    # Add Investigation_and_Action_SOP.md citation for recommended_action.
+    # NOTE: this must run even when filtered_citations is EMPTY — in the
+    # fallback path no finding may carry a marker (score summaries are never
+    # cited), yet the SOP citation is still legitimately used by the action
+    # ("Manual Review [1]"). The SOP citation takes next_sop_id, which is
+    # contiguous after the used citation set (1 when nothing else is used).
+    if isinstance(explanation.get("recommended_action"), str):
         # Try to retrieve an SOP citation for the action recommendation
         try:
             rag = PolicyRAGService()
@@ -1480,6 +1666,32 @@ async def generate_explanation(
     )
 
     explanation["missing_info"] = missing_info
+
+    # Persist as the canonical explanation artifact. First generation, stale
+    # regeneration, and explicit regeneration all go through this same path;
+    # save() replaces the single (user_id, audience) row. Failure to persist
+    # must not break the explanation response itself.
+    try:
+        await store.save(
+            user_id=payload.user_id,
+            audience=audience,
+            fingerprint=fingerprint,
+            payload=explanation,
+            explanation_source=explanation.get("explanation_source", "MODEL_FALLBACK"),
+            model_provider=(
+                settings.ANTHROPIC_MODEL
+                if explanation.get("explanation_source") == "LLM"
+                else None
+            ),
+            risk_event_id=risk_event.id,
+            pipeline_run_id=risk_event.pipeline_run_id,
+            model_version=risk_event.model_version,
+            pol_version=policy_version(),
+        )
+    except Exception as persist_error:
+        logger.warning(
+            f"Failed to persist explanation for {payload.user_id}: {persist_error}"
+        )
 
     # Store in cache for future requests
     _explanation_cache.set(cache_key, explanation)

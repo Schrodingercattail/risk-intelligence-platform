@@ -66,8 +66,11 @@ class Settings(BaseSettings):
     EXPLAIN_CACHE_MAX_SIZE: int = 1024
     # EXPLAIN_RATE_LIMIT_PER_MIN: Rate limit per client IP per minute (default: 30)
     EXPLAIN_RATE_LIMIT_PER_MIN: int = 30
-    # EXPLAIN_LLM_TIMEOUT_SECONDS: Timeout for LLM API calls (default: 5 seconds)
-    EXPLAIN_LLM_TIMEOUT_SECONDS: int = 5
+    # EXPLAIN_LLM_TIMEOUT_SECONDS: Timeout for LLM API calls.
+    # Default raised from 5s to 30s: thinking-mode models served via the
+    # Anthropic-compatible gateway routinely exceed 5s before the final text
+    # block, which caused spurious timeout fallbacks. Override via .env if needed.
+    EXPLAIN_LLM_TIMEOUT_SECONDS: int = 30
 
     # Risk Scoring Weights
     ML_WEIGHT: float = 0.5

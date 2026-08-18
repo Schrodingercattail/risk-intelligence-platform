@@ -71,6 +71,13 @@ export const riskApi = {
   },
   generateExplanation: (userId: string, bypassCache: boolean = false) =>
     api.post<Explanation>(`/api/risk/explain?bypass_cache=${bypassCache ? 'true' : 'false'}`, { user_id: userId }),
+
+  // Explicit regeneration: generates a NEW explanation from the current
+  // canonical evidence/policy context and persists it as the canonical
+  // artifact. Explanation-level operation only — risk scores are NOT
+  // recalculated (no ML inference, rule scoring, or graph scoring).
+  regenerateExplanation: (userId: string) =>
+    api.post<Explanation>('/api/risk/explain/regenerate', { user_id: userId }),
 };
 
 export const pipelineApi = {

@@ -27,16 +27,27 @@ services:
       - "8000:8000"
     environment:
       - DATABASE_URL=postgresql://user:pass@database:5432/risk_platform
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - MODEL_PATH=/app/models
       - DEBUG=true
+      # LLM explanation layer (optional; values come from the local untracked
+      # .env via Compose variable interpolation — never hardcode secrets here)
+      - ENABLE_LLM_EXPLANATION=${ENABLE_LLM_EXPLANATION:-false}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-}
+      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-}
+      - EXPLAIN_LLM_TIMEOUT_SECONDS=${EXPLAIN_LLM_TIMEOUT_SECONDS:-30}
     volumes:
       - ./ml-models/artifacts:/app/models:ro
+      # Policy documents for RAG citations / policy_version fingerprinting.
+      # The services resolve the policies directory by walking up from
+      # /app/app/services to the filesystem root, expecting /policies.
+      - ./policies:/policies:ro
     depends_on:
       database:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      # python:3.12-slim has no curl — use the Python stdlib instead.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -47,9 +58,9 @@ services:
       dockerfile: Dockerfile
     container_name: risk_platform_frontend
     ports:
-      - "3000:3000"
-    environment:
-      - REACT_APP_API_URL=http://backend:8000
+      # nginx listens on container port 80 (see frontend/nginx.conf);
+      # the production build uses relative /api calls, proxied by nginx.
+      - "3000:80"
     depends_on:
       - backend
 

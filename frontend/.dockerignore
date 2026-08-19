@@ -1,0 +1,25 @@
+# Frontend build context exclusions — keep the context small and secrets out.
+# CRITICAL: .env must NEVER enter the build context or image.
+
+# Secrets / environment
+.env
+.env.*
+*.key
+*.pem
+
+# VCS / IDE
+.git
+.gitignore
+.vscode
+.idea
+
+# Dependencies (rebuilt inside the builder stage via npm ci)
+node_modules
+
+# Previous build outputs (rebuilt inside the builder stage)
+build
+dist
+
+# Local state
+*.log
+.DS_Store

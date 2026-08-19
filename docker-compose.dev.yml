@@ -1,5 +1,12 @@
 # Development override with hot reload
 # Use: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# Notes:
+# - ./backend/app is mounted over /app/app, so all new services under
+#   app/services (explanation_store_service, narrative_contract, ...) hot-reload.
+# - ./policies:/policies:ro is inherited from the base compose file and is NOT
+#   overridden here, so policy documents stay mounted in dev mode too.
+# - Frontend port mapping (3000:80) is inherited from the base compose file.
 
 version: '3.8'
 

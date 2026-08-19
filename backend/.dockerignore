@@ -1,0 +1,32 @@
+# Backend build context exclusions — keep secrets and dev artifacts out of the image.
+# CRITICAL: .env must NEVER enter the build context or image (contains API keys).
+
+# Secrets / environment
+.env
+.env.*
+*.key
+*.pem
+
+# VCS / IDE
+.git
+.gitignore
+.vscode
+.idea
+
+# Python artifacts
+__pycache__
+*.pyc
+*.pyo
+.venv
+venv
+.pytest_cache
+.coverage
+htmlcov
+
+# Tests (not needed at runtime; the image runs the API only)
+tests
+
+# Local state
+*.log
+logs
+.DS_Store

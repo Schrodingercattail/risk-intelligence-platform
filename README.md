@@ -1,16 +1,18 @@
 # Risk Intelligence Platform
 
-**Multi-Signal Risk Detection & Explainable Investigation Platform**
+**Multi-Signal Risk Detection & Evidence-Grounded AI Investigation Platform**
 
-An ML-based risk detection platform with policy-backed investigation support, combining machine learning, rule engines, and graph analysis to identify suspicious behaviors and support analyst workflows across risk-sensitive industries.
+An AI/ML risk intelligence platform combining machine learning, deterministic rule engines, graph-based detection, and RAG-grounded LLM investigation narratives to identify suspicious behaviors, ground findings in policy evidence, and support analyst-led investigations across risk-sensitive industries.
 
 ---
 
 ## Project Overview
 
-This is an **extensible risk intelligence platform** that demonstrates how modern risk systems can combine data pipelines, machine learning models, rule engines, graph-based signals, monitoring systems, and investigation workflows into a unified architecture.
+This is an **extensible risk intelligence platform** that combines multi-signal risk detection with evidence-grounded Generative AI for investigation support. The platform integrates machine learning, rule-based signals, graph analysis, model monitoring, policy retrieval, claim-level citation validation, and persisted LLM explanations into a unified investigation workflow.
 
-The platform implements a complete risk detection pipeline from data ingestion through scoring, monitoring, and alerting. While demonstrated with trading-inspired datasets, the underlying architecture is **industry-agnostic** and transferable to multiple domains.
+Its architecture separates risk detection from AI-generated explanation: ML, Rule, and Graph components produce structured risk evidence, while the LLM acts as an explanation layer grounded in canonical evidence and policy context. This allows investigators to use natural-language AI assistance without making the LLM the source of risk scores or the final decision-maker.
+
+The platform implements a complete risk detection pipeline from data ingestion through scoring, monitoring, and alerting. While demonstrated with trading-inspired datasets, the underlying architecture is **industry-agnostic** and transferable to multiple risk-sensitive domains.
 
 ---
 

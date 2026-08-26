@@ -210,4 +210,4 @@ Key test cases:
 ## Related Documentation
 
 - [Citation Taxonomy](citation-taxonomy.md) — Finding type to policy mapping definitions
-- [LLM Optional Design](llm-optional-design.md) — Optional LLM-assisted explanation layer
+- [LLM Explanation Design](llm-explanation-design.md) — LLM explanation subsystem design

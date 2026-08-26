@@ -290,4 +290,4 @@ To prevent misclassification (e.g., "Elevated Linked Account Network" → ACCOUN
 ## Related Documentation
 
 - [Citation System Design](citation-system-design.md) — Implementation architecture and validation strategy
-- [LLM Optional Design](llm-optional-design.md) — Optional LLM-assisted explanation layer
+- [LLM Explanation Design](llm-explanation-design.md) — LLM explanation subsystem design

@@ -1,8 +1,10 @@
-# LLM Explanation Architecture
+# LLM Explanation Design
 
-Optional LLM narrative generation with canonical evidence, policy grounding, citation validation, deterministic fallback, and persisted canonical artifacts.
+Detailed design of the LLM Explanation subsystem: LLM optional/default/fallback semantics, the canonical evidence boundary, LLM responsibilities, the narrative contract, citation grounding, persisted explanation tiers, explicit regeneration, response handling, timeout/reliability, observability, and the design rationale behind them.
 
-This document describes how the LLM explanation layer fits into the Risk Platform architecture. Configuration numbers, latency/cost tables, and the full citation taxonomy live in the documents referenced at the end.
+This document describes the detailed design of the LLM Explanation subsystem. For the overall Risk Platform architecture, see [../architecture.md](../architecture.md).
+
+LLM integration is optional at the deployment/configuration level — the platform operates fully without it — but that optionality is a configuration property, not the main scope of this document. Configuration numbers, latency/cost tables, and the full citation taxonomy live in the documents referenced at the end.
 
 ---
 
@@ -335,7 +337,9 @@ A prior consistency review confirmed: risk scoring is independent of explanation
 
 ## Related Documentation
 
+- [System Architecture](../architecture.md) — overall Risk Platform architecture (detection, canonical evidence, narrative, persistence, UI); this document is the LLM-explanation subsystem detail beneath it
 - [README](../../README.md) — product-level architecture, Canonical Evidence, Narrative Contract, persistence overview
 - [Cost & Latency Strategy](../cost-latency-strategy.md) — latency budgets, cache/persistence tuning, cost analysis
 - [Citation System Design](citation-system-design.md) — citation pipeline components
+- [Citation Taxonomy](citation-taxonomy.md) — finding classification and policy mapping rules
 - [Data Contract](../data-contract.md) — API schemas

@@ -118,7 +118,7 @@ Privacy: IPs/emails/phones/long-IDs masked before LLM calls; policy thresholds/p
 ## Key References
 
 - `README.md` — Canonical Evidence & Unified Findings; Narrative Contract; Explanation Persistence & Cache; Risk Detection & Scoring Logic
-- `docs/architecture/llm-optional-design.md` — LLM Explanation Architecture
+- `docs/architecture/llm-explanation-design.md` — LLM Explanation subsystem design (detailed)
 - `docs/cost-latency-strategy.md` — latency/cost model, tier semantics
 - `docs/data-contract.md` §21 — explanation endpoints/artifact data contract
 - `eval/llm_explain_eval_summary.md` — P1 historical baseline (A5 90%; predates narrative contract — historical, not current state)

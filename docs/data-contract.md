@@ -1771,7 +1771,8 @@ This section defines the data contract for the Policy-backed Narrative APIs:
 ordinary explanation reads, explicit regeneration, the persisted canonical
 explanation artifact, and the canonical evidence structure that feeds them.
 Architecture rationale lives in
-[docs/architecture/llm-optional-design.md](architecture/llm-optional-design.md).
+[docs/architecture/llm-explanation-design.md](architecture/llm-explanation-design.md)
+(system-wide architecture: [docs/architecture.md](architecture.md)).
 
 Endpoint Summary:
 

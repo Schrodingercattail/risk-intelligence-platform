@@ -997,12 +997,14 @@ Each rule contributes a fixed amount when its trigger condition holds; **Rule Sc
 | Rule name | Trigger condition | Contribution | Evidence fields |
 |---|---|---|---|
 | New account with high activity | `account_age_days < 7` AND `trade_frequency_24h > 50` | +40 | `account_age_days`, `trade_frequency_24h` |
-| High opposite trade ratio | `opposite_trade_ratio > 0.4` | +35 | `opposite_trade_ratio` |
+| Coordinated Trading Pattern | `opposite_trade_ratio > 0.4` | +35 | `opposite_trade_ratio` |
 | Multiple shared devices | `shared_device_count > 3` | +30 | `shared_device_count` |
 | High withdrawal frequency | `withdrawal_frequency_24h > 5` | +25 | `withdrawal_frequency_24h` |
 | First withdrawal | `first_withdrawal_flag = true` AND `withdrawal_frequency_24h` present | +20 | `first_withdrawal_flag`, `withdrawal_frequency_24h` |
 
 **Important:** "Account Age" alone is *contextual evidence*, never a rule. The only account-age rule is "New account with high activity" above (both conditions required).
+
+**Opposite-trade threshold semantics:** any `0 < opposite_trade_ratio <= 0.4` is an *observation* — it creates a "Opposite Trade Ratio" RiskFactor / unified finding (no rule contribution, no +35). Only `opposite_trade_ratio > 0.4` triggers the "Coordinated Trading Pattern" rule. The factor name and description therefore distinguish observed below-threshold behavior from a triggered rule (e.g. U00010 with ratio 0.3438 is an observation, not a coordinated-trading finding).
 
 ### C. Graph Detection (network)
 
@@ -1051,6 +1053,7 @@ Each rule contributes a fixed amount when its trigger condition holds; **Rule Sc
 
 ## Documentation
 
+- [System Architecture](docs/architecture.md) — Layers, data flow, regenerate lifecycle, source-of-truth hierarchy, `opposite_trade_ratio` semantics, failure boundaries
 - [ML Pipeline Documentation](docs/ml-pipeline.md)
 - [PSI Monitoring Guide](docs/psi-monitoring.md)
 - [Model Monitoring](docs/model-monitoring.md)
@@ -1060,12 +1063,14 @@ Each rule contributes a fixed amount when its trigger condition holds; **Rule Sc
 - [Security & Privacy](docs/security_privacy.md)
 - [Validation Report](docs/validation-report.md)
 - [Test Data Catalog](test_data/README.md)
+- [Project Context](project-context.md) — Long-lived project facts and conventions
+- [Project Handoff](project-handoff.md) — Current development state
 
 ### Architecture Documentation
 
 - [Citation System Design](docs/architecture/citation-system-design.md) — Citation pipeline, domain enforcement, and validation strategy
 - [Citation Taxonomy](docs/architecture/citation-taxonomy.md) — Finding classification and policy mapping rules
-- [LLM Optional Design](docs/architecture/llm-optional-design.md) — Optional explanation layer with fallback behavior and privacy controls
+- [LLM Explanation Design](docs/architecture/llm-explanation-design.md) — Detailed LLM explanation subsystem: optional/default/fallback semantics, prompt grounding, citations, persistence, reliability
 
 ---
 

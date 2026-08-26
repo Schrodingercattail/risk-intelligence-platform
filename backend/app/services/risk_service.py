@@ -377,15 +377,17 @@ class RiskScoringService:
         #   (B) policy-backed guidance -> policies/*.md, surfaced via citations.
         # In particular, account_age_days is emitted for ANY age > 0, so it is labelled
         # "Account Age" (context), NOT "New Account Risk" (which would imply a threshold/rule).
+
+        # Base factor mapping (excluding opposite_trade_ratio which is handled specially)
         factor_mapping = {
             "shared_device_count": "Shared Device Relationships",
             "linked_account_count": "Linked Account Network",
-            "opposite_trade_ratio": "Coordinated Trading Pattern",
             "trade_frequency_24h": "High Trading Frequency",
             "withdrawal_risk_score": "Abnormal Withdrawal Behavior",
             "account_age_days": "Account Age",
         }
 
+        # Process standard factors
         for attr, name in factor_mapping.items():
             value = getattr(feature, attr)
             if value is not None and value != 0:
@@ -399,12 +401,34 @@ class RiskScoringService:
                     )
                     self.db.add(factor)
 
+        # Handle opposite_trade_ratio separately to provide semantic clarity
+        opposite_trade_ratio = feature.opposite_trade_ratio
+        if opposite_trade_ratio is not None and opposite_trade_ratio != 0:
+            value = float(opposite_trade_ratio)
+            if value > 0:
+                # Determine label and description based on rule threshold
+                # Rule threshold: > 0.4 triggers coordinated-trading rule (see _calculate_rule_score)
+                rule_threshold = 0.4
+                rule_triggered = value > rule_threshold
+
+                if rule_triggered:
+                    factor_name = "Coordinated Trading Pattern"
+                else:
+                    factor_name = "Opposite Trade Ratio"
+
+                factor = RiskFactor(
+                    risk_event_id=risk_event.id,
+                    factor_name=factor_name,
+                    factor_value=value,
+                    factor_description=self._get_opposite_trade_description(value, rule_triggered, rule_threshold),
+                )
+                self.db.add(factor)
+
     def _get_factor_description(self, factor_name: str, value: Any) -> str:
         """Get human-readable description for a factor."""
         descriptions = {
             "Shared Device Relationships": f"{int(value)} linked accounts through shared devices",
             "Linked Account Network": f"{int(value)} connected accounts detected",
-            "Coordinated Trading Pattern": f"{value*100:.1f}% opposite trading ratio detected",
             "High Trading Frequency": f"{int(value)} trades in 24h period",
             "Abnormal Withdrawal Behavior": f"Risk score: {value:.2f}",
             # Contextual account-age evidence. Wording must NOT imply a policy threshold, a
@@ -413,6 +437,45 @@ class RiskScoringService:
             "Account Age": f"Account is {int(value)} days old (contextual account-age evidence; not a policy threshold)",
         }
         return descriptions.get(factor_name, f"Value: {value}")
+
+    def _get_opposite_trade_description(self, value: float, rule_triggered: bool, rule_threshold: float) -> str:
+        """
+        Get human-readable description for opposite trade ratio factor.
+
+        Semantics:
+        - value > 0: Factor is created (observed signal)
+        - value > 0.4: Coordinated-trading rule is triggered (score contribution)
+
+        This method provides clear distinction between:
+        1. Observed opposite-trading behavior (below threshold)
+        2. Coordinated-trading rule triggered (above threshold)
+
+        Args:
+            value: The opposite_trade_ratio value
+            rule_triggered: Whether the coordinated-trading rule was triggered (> 0.4)
+            rule_threshold: The rule threshold (0.4)
+
+        Returns:
+            Human-readable description with clear semantic status
+        """
+        percentage = value * 100
+        threshold_percent = rule_threshold * 100
+
+        # Wording mirrors EvidenceService's threshold-finding descriptions so
+        # the below-threshold observation vs threshold-triggered rule
+        # distinction is identical everywhere it is surfaced.
+        if rule_triggered:
+            return (
+                f"An opposite-trade ratio of {percentage:.2f}% exceeded the "
+                f"{threshold_percent:.0f}% threshold, triggering the "
+                f"coordinated trading rule."
+            )
+        else:
+            return (
+                f"An opposite-trade ratio of {percentage:.2f}% was observed, "
+                f"which is below the {threshold_percent:.0f}% threshold for "
+                f"the coordinated trading rule."
+            )
 
 
 class CaseManagementService:

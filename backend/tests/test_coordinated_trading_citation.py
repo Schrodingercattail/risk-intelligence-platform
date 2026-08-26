@@ -5,8 +5,8 @@ The opposite-trade ratio is a single aggregate statistic — it cannot show that
 the account "consistently offset another party's positions", and the policy
 corpus has NO section supporting opposite-trade/coordinated-trading semantics.
 Therefore:
-- wording must be calibrated (observed fact + "may warrant further review" +
-  "potentially coordinated trading behavior")
+- wording is threshold-explicit: below 40% = observed metric (NEVER phrased as
+  the rule firing); above 40% = the rule triggered
 - the finding stays UNCITED (the High-Velocity Transfers section supports
   velocity/counts, not offsetting behavior) unless a genuinely matching
   policy section exists.
@@ -90,7 +90,7 @@ class TestCoordinatedTradingCitation:
 
 
 class TestWordingCalibration:
-    """Prompt instructs calibrated interpretation of the ratio."""
+    """Prompt instructs threshold-explicit interpretation of the ratio."""
 
     def test_prompt_contains_calibrated_opposite_trade_guidance(self):
         svc = LLMExplanationService.__new__(LLMExplanationService)
@@ -108,18 +108,29 @@ class TestWordingCalibration:
                               "evidence_type": "feature",
                               "observed_value": {"opposite_trade_ratio": 0.3438}}],
             })
-        low = prompt.lower()
-        assert "may warrant further review" in low
-        assert "potentially coordinated trading behavior" in low
+        # whitespace-normalized: instruction text wraps across source lines
+        import re
+        low = re.sub(r"\s+", " ", prompt.lower())
+        # threshold semantics are part of the business contract
+        assert "below the 40% threshold for the coordinated trading rule" in low
+        assert "exceeded the 40% threshold, triggering the coordinated trading rule" in low
         assert "does not show that the account offset another" in low
-        # natural-language observed value rendered
-        assert "opposite-trade ratio of 34.38%" in low
-        # over-claiming words are prohibited in the instruction
-        assert "nor confirm coordination" in low
+        # natural-language observed value rendered threshold-aware
+        assert "opposite-trade ratio of 34.38% was observed, which is below" in low
+        # wording that implies the rule fired below threshold is explicitly banned
+        assert "never write \"potentially coordinated trading behavior\"" in low
+        assert "any wording implying the" in low
 
     def test_target_wording_matches_spec(self):
-        # the canonical target sentence is exactly what the instruction models
+        # the canonical target sentences are exactly what the instruction models
         svc = LLMExplanationService.__new__(LLMExplanationService)
         svc.provider = None
         assert svc._humanize_observed("x", {"opposite_trade_ratio": 0.3438}) == \
-            "an opposite-trade ratio of 34.38% was observed"
+            ("an opposite-trade ratio of 34.38% was observed, which is below "
+             "the 40% threshold for the coordinated trading rule")
+        assert svc._humanize_observed("x", {"opposite_trade_ratio": 0.52}) == \
+            ("an opposite-trade ratio of 52.00% exceeded the 40% threshold, "
+             "triggering the coordinated trading rule")
+        # boundary: exactly 0.4 does NOT trigger the rule (strict >)
+        assert "below the 40% threshold" in \
+            svc._humanize_observed("x", {"opposite_trade_ratio": 0.4})

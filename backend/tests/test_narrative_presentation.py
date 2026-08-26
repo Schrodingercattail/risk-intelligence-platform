@@ -4,8 +4,9 @@ Narrative presentation-layer tests.
 Canonical Evidence remains complete (thresholds, contributions, raw values,
 detection_sources); the DEFAULT user-facing narrative is investigation-oriented:
 - no score contributions, no raw threshold expressions / snake_case fields
-- no "withdrawal risk score = N"
+- no "withdrawal risk score = N" (rendered as the business behavior instead)
 - natural-language rendering of observed values
+- EVERY canonical finding supplied to the LLM (none intentionally omitted)
 - ML signal visible + labeled as system signal
 - no detection-source wording
 - Key Risk Findings and Next Actions have independent numbering scopes
@@ -114,9 +115,31 @@ class TestPromptPresentationLayer:
                       "withdrawal_risk_score"):
             assert field not in self.prompt, f"raw field leaked: {field}"
 
-    def test_withdrawal_risk_score_not_in_prompt_findings(self):
-        assert "abnormal withdrawal behavior" not in self.low, \
-            "sub-score finding omitted from narrative (kept in canonical)"
+    def test_withdrawal_behavior_finding_in_prompt_business_language(self):
+        # Canonical evidence is authoritative: EVERY canonical finding —
+        # including the Abnormal Withdrawal Behavior feature finding — is
+        # supplied to the LLM, rendered in business language (never the raw
+        # sub-score or field name).
+        assert "abnormal withdrawal behavior" in self.low, \
+            "canonical finding must be supplied to the LLM (no intentional omission)"
+        assert "withdrawals were sent to newly encountered addresses" in self.low
+        awb_line = self.ev_findings_line()
+        assert "withdrawal risk score" not in awb_line.lower(), \
+            f"raw sub-score leaked into the finding's evidence: {awb_line!r}"
+        assert "1.0" not in awb_line, \
+            "raw sub-score value must not surface in the prompt findings"
+        # the phrase may appear ONLY inside the instruction that forbids it
+        import re
+        for pos in [m.start() for m in re.finditer("withdrawal risk score", self.low)]:
+            context = self.low[max(0, pos - 60):pos + 30]
+            assert "never" in context, f"non-instruction mention: {context!r}"
+
+    def ev_findings_line(self):
+        # the prompt line carrying the AWB finding's evidence
+        for line in self.prompt.splitlines():
+            if "abnormal withdrawal behavior" in line.lower():
+                return line
+        return ""
 
     def test_ml_signal_visible_and_labeled(self):
         assert "99.41" in self.prompt
@@ -139,7 +162,13 @@ class TestPromptPresentationLayer:
             "first_withdrawal_flag": True, "opposite_trade_ratio": 0.3438,
         }) == ("the account is 6 days old; 54 trades were recorded in 24 hours; "
                "a first withdrawal to a new address was detected; "
-               "an opposite-trade ratio of 34.38% was observed")
+               "an opposite-trade ratio of 34.38% was observed, which is below "
+               "the 40% threshold for the coordinated trading rule")
+
+    def test_humanize_withdrawal_risk_score_as_percentage(self):
+        # 0..1 ratio rendered as a business percentage, never a raw sub-score
+        out = self.svc._humanize_observed("x", {"withdrawal_risk_score": 1.0})
+        assert out == "100.00% of withdrawals were sent to newly encountered addresses"
 
 
 class TestParserNumberingScopes:

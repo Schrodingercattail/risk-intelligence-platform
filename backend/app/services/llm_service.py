@@ -338,6 +338,12 @@ class LLMExplanationService:
     - On error: Falls back to structured response with error information
     """
 
+    # Coordinated-trading rule threshold (opposite_trade_ratio > 0.4 triggers
+    # the rule; 0 < ratio <= 0.4 is an observed metric below threshold).
+    # Mirrors EvidenceService._THRESHOLD_FINDINGS and the scorer's rule —
+    # presentation only, never a scoring decision.
+    OPPOSITE_TRADE_RULE_THRESHOLD = 0.4
+
     def __init__(self, provider: Optional[LLMProvider] = None):
         """Initialize service with LLM provider."""
         if provider:
@@ -425,10 +431,23 @@ class LLMExplanationService:
         "trade_frequency_24h": "{value} trades were recorded in 24 hours",
         "withdrawal_frequency_24h": "{value} withdrawals were recorded in 24 hours",
         "first_withdrawal_flag": "a first withdrawal to a new address was detected",
-        "opposite_trade_ratio": "an opposite-trade ratio of {pct}% was observed",
+        # Threshold-aware renderings; {threshold} is the coordinated-trading
+        # rule threshold in percent. The wording must always distinguish the
+        # below-threshold OBSERVATION from the threshold-triggered RULE.
+        "opposite_trade_ratio_below": (
+            "an opposite-trade ratio of {pct}% was observed, which is below "
+            "the {threshold}% threshold for the coordinated trading rule"
+        ),
+        "opposite_trade_ratio_above": (
+            "an opposite-trade ratio of {pct}% exceeded the {threshold}% "
+            "threshold, triggering the coordinated trading rule"
+        ),
         "shared_device_count": "{value} linked account(s) through shared devices",
         "connected_accounts": "{value} connected accounts were detected",
         "ml_score": "ML signal of {value}/100",
+        # withdrawal_risk_score is the fraction of withdrawals sent to newly
+        # encountered addresses (0..1) — never rendered as an internal sub-score.
+        "withdrawal_risk_score": "{pct}% of withdrawals were sent to newly encountered addresses",
     }
 
     def _humanize_observed(self, finding_name: str, observed: Dict[str, Any]) -> str:
@@ -444,6 +463,23 @@ class LLMExplanationService:
 
         parts = []
         for key, value in observed.items():
+            # opposite_trade_ratio resolves to a threshold-aware template
+            # (below/above the coordinated-trading rule threshold); all other
+            # fields use their fixed template.
+            if key == "opposite_trade_ratio":
+                try:
+                    ratio = float(value)
+                    pct = f"{ratio * 100:.2f}"
+                    threshold_pct = int(self.OPPOSITE_TRADE_RULE_THRESHOLD * 100)
+                    template = (
+                        self._FIELD_LANGUAGE["opposite_trade_ratio_below"]
+                        if 0 < ratio <= self.OPPOSITE_TRADE_RULE_THRESHOLD
+                        else self._FIELD_LANGUAGE["opposite_trade_ratio_above"]
+                    )
+                    parts.append(template.format(pct=pct, threshold=threshold_pct))
+                except (TypeError, ValueError):
+                    parts.append(f"{key} = {value}")
+                continue
             template = self._FIELD_LANGUAGE.get(key)
             if template is None:
                 parts.append(f"{key} = {value}")
@@ -451,7 +487,8 @@ class LLMExplanationService:
             if key == "first_withdrawal_flag":
                 if value:
                     parts.append(template)
-            elif key == "opposite_trade_ratio":
+            elif key == "withdrawal_risk_score":
+                # 0..1 ratio renders as a business percentage, never a raw sub-score
                 try:
                     parts.append(template.format(pct=f"{float(value) * 100:.2f}"))
                 except (TypeError, ValueError):
@@ -539,13 +576,11 @@ class LLMExplanationService:
                     # Presentation layer: investigators see natural language.
                     # Raw field names, threshold expressions and score
                     # contributions stay in Canonical Evidence (audit/debug).
+                    # EVERY canonical finding is supplied: canonical evidence
+                    # is authoritative for which findings exist — the LLM
+                    # explains them all; the narrative contract aligns wording
+                    # and the completeness append is only a safety net.
                     name = f.get("name", "")
-                    # Withdrawal-behavior sub-score is not independently
-                    # actionable for investigators (its drivers — frequency,
-                    # first withdrawal — are already listed as findings);
-                    # omit from the narrative, keep in canonical evidence.
-                    if name == "Abnormal Withdrawal Behavior":
-                        continue
                     observed = f.get("observed_value") or {}
                     prompt_parts.append(f"  - {name} (evidence: {self._humanize_observed(name, observed)})")
             prompt_parts.append("")
@@ -590,12 +625,22 @@ class LLMExplanationService:
             "    elevated withdrawal frequency.\")",
             "  * NEVER show \"withdrawal risk score = N\" or any raw sub-score for",
             "    withdrawal behavior; describe behavior in business terms.",
-            "  * Calibrated interpretation only. An opposite-trade ratio is a single",
-            "    aggregate statistic: it does NOT show that the account offset another",
-            "    party's positions, nor confirm coordination/manipulation. Phrase it as",
-            "    e.g. \"An opposite-trade ratio of 34.38% was observed and may warrant",
-            "    further review for potentially coordinated trading behavior.\" —",
-            "    observed fact + \"may warrant further review\" + \"potentially\".",
+            "  * OPPOSITE-TRADE RATIO — threshold semantics are part of the",
+            "    business contract; the narrative MUST state which side of the",
+            "    40% coordinated-trading threshold the observed ratio falls on:",
+            "    - Below threshold (finding \"Opposite Trade Ratio\"): phrase as",
+            "      e.g. \"An opposite-trade ratio of 34.38% was observed, which is",
+            "      below the 40% threshold for the coordinated trading rule.\"",
+            "      NEVER write \"potentially coordinated trading behavior\",",
+            "      \"coordinated trading pattern detected\", \"may warrant further",
+            "      review for coordinated trading\", or ANY wording implying the",
+            "      coordinated-trading rule was triggered.",
+            "    - Above threshold (finding \"Coordinated Trading Pattern\"):",
+            "      phrase as e.g. \"An opposite-trade ratio of 41.00% exceeded the",
+            "      40% threshold, triggering the coordinated trading rule.\"",
+            "    In both cases the ratio is a single aggregate statistic: it does",
+            "    NOT show that the account offset another party's positions, nor",
+            "    confirm coordination/manipulation by itself.",
             "- NEVER mention HOW a finding was produced. Do not write any",
             "  detection-source label (no ML/Rule/Graph/Feature provenance wording).",
             "  Detection provenance is internal; investigators see findings, not pipelines.",

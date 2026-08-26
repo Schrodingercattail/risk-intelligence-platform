@@ -51,8 +51,11 @@ _GRAPH_ZERO_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Numbered markers must be followed by whitespace/end so decimals like "34.4%"
+# are never mistaken for a list marker and stripped (cf. NUMBERED_FINDING_HEADER
+# in routes/risk.py).
 _LIST_MARKER_RE = re.compile(
-    r"^[\s]*(?:(?:\*{0,2})\d+[\.\)](?:\*{1,2})?|[-•]+|\*(?![-•\d]))\s*")
+    r"^[\s]*(?:(?:\*{0,2})\d+[\.\)](?:\*{1,2})?(?=\s|$)|[-•]+|\*(?![-•\d]))\s*")
 
 
 def _strip_list_marker(line: str) -> str:
@@ -178,6 +181,35 @@ def scrub_narrative_text(text: str) -> str:
     return re.sub(r"\s{2,}", " ", text).replace(" — ", " — ").strip()
 
 
+# Content-word signature: hyphens->spaces, drop articles, prefix each word
+# to 5 chars (handles singular/plural and "relationship(s)"), keep order.
+_STOP = {"a", "an", "the", "of", "with", "to", "and", "for", "in", "on"}
+
+# Decorative intensity prefixes that do not change a finding's identity
+# ("Elevated Shared Device Relationships" == "Shared Device Relationships").
+_INTENSITY_PREFIX_RE = [
+    re.compile(p) for p in (
+        r"^elevated\s+", r"^high\s+", r"^increased\s+",
+        r"^reduced\s+", r"^low\s+",
+    )
+]
+
+
+def _head_signature(text: str) -> List[str]:
+    """Signature of a line's head (text before the first punctuation)."""
+    text = _LIST_MARKER_RE.sub("", text.strip()).strip()
+    head = re.split(r"[—–\.\[\(;:,]", text, maxsplit=1)[0]
+    head = head.replace("-", " ").lower()
+    for pattern in _INTENSITY_PREFIX_RE:
+        head = pattern.sub("", head).strip()
+    return [w[:5] for w in head.split() if w and w not in _STOP]
+
+
+def _signature_prefix_match(sig: Tuple[str, ...], name_sig: Tuple[str, ...]) -> bool:
+    """Whole-word-prefix match between a line signature and a canonical name."""
+    return bool(name_sig) and (sig[:len(name_sig)] == name_sig or name_sig[:len(sig)] == sig)
+
+
 def _merge_by_canonical_names(
     findings: List[str], canonical_names: List[str]
 ) -> List[str]:
@@ -193,22 +225,11 @@ def _merge_by_canonical_names(
     finding. Lines before the first title are dropped as prose. This is a
     structural key — no per-sentence heuristics, no case specifics.
     """
-    # Content-word signature: hyphens->spaces, drop articles, prefix each word
-    # to 5 chars (handles singular/plural and "relationship(s)"), keep order.
-    _STOP = {"a", "an", "the", "of", "with", "to", "and", "for", "in", "on"}
-
-    def _signature(text: str) -> List[str]:
-        text = _LIST_MARKER_RE.sub("", text.strip()).strip()
-        head = re.split(r"[—–\.\[\(;:,]", text, maxsplit=1)[0]
-        head = head.replace("-", " ").lower()
-        return [w[:5] for w in head.split() if w and w not in _STOP]
-
     # signature per canonical name; keep them in a list for ordering checks
-    name_sigs = [_signature(n) for n in canonical_names if n]
-    name_sig_set = {tuple(s) for s in name_sigs if s}
+    name_sig_set = {tuple(_head_signature(n)) for n in canonical_names if n}
 
     def _is_title_line(line: str) -> bool:
-        sig = tuple(_signature(line))
+        sig = tuple(_head_signature(line))
         if len(sig) < 2:
             return False
         if sig in name_sig_set:
@@ -216,7 +237,7 @@ def _merge_by_canonical_names(
         # allow leading-signature match: the model title may carry extra
         # trailing descriptors ("Coordinated trading pattern indicator")
         for ns in name_sig_set:
-            if sig[:len(ns)] == ns or ns[:len(sig)] == sig:
+            if _signature_prefix_match(sig, ns):
                 return True
         return False
 
@@ -236,9 +257,49 @@ def _merge_by_canonical_names(
     return merged
 
 
+def _append_uncovered_canonical(
+    merged: List[str], canonical_findings: List[Dict[str, Any]]
+) -> List[str]:
+    """
+    Completeness guarantee: append canonical findings the narrative missed.
+
+    The merge above is a FILTER — it can only drop, never add. That made the
+    rendered findings depend on the generator (LLM or fallback) reproducing
+    the canonical finding list, so a generator that omitted, rephrased beyond
+    signature match, or collapsed findings silently LOST them (observed as
+    key_findings == [] when every line was classified as prose). Canonical
+    evidence is the authoritative findings layer; the narrative is an
+    explanation of it. Findings with no matched title are therefore appended
+    here (name as title line, canonical evidence text as supporting line) in
+    canonical order, after the narrated ones.
+    """
+    if not canonical_findings:
+        return merged
+    name_sigs = [tuple(_head_signature(f.get("name") or "")) for f in canonical_findings]
+    covered = [False] * len(canonical_findings)
+    for elem in merged:
+        sig = tuple(_head_signature(elem.split("\n")[0]))
+        if len(sig) < 2:
+            continue
+        for i, ns in enumerate(name_sigs):
+            if ns and _signature_prefix_match(sig, ns):
+                covered[i] = True
+    out = list(merged)
+    for i, f in enumerate(canonical_findings):
+        if covered[i]:
+            continue
+        name = (f.get("name") or "").strip()
+        if not name:
+            continue
+        evidence = (f.get("evidence") or "").strip()
+        out.append(f"{name}\n{evidence}" if evidence else name)
+    return out
+
+
 def apply_narrative_contract(
     explanation: Dict[str, Any],
     canonical_finding_names: Optional[List[str]] = None,
+    canonical_findings: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
     Enforce the Global Narrative Contract on an explanation payload (in place).
@@ -252,12 +313,20 @@ def apply_narrative_contract(
     (EvidenceService.get_canonical_evidence). When supplied, an element is a
     TITLE iff its first line starts with one of these names — everything else
     is an evidence line merged into the preceding title. This is a structural
-    key (no wording heuristics) and guarantees the narrative's findings are
-    exactly the canonical findings, each numbered once.
+    key (no wording heuristics).
+
+    canonical_findings: the full finding dicts ({name, evidence, ...}). When
+    supplied, any canonical finding with no matched title is APPENDED after
+    the merge (name as title, canonical evidence as supporting line) — the
+    canonical evidence is the authoritative findings layer, so a generator
+    that omitted or over-rephrased a finding can never remove it from the
+    rendered list. Omit both args to pass findings through unmerged.
     """
     findings = explanation.get("key_findings") or []
     if canonical_finding_names:
         findings = _merge_by_canonical_names(findings, canonical_finding_names)
+        if canonical_findings:
+            findings = _append_uncovered_canonical(findings, canonical_findings)
     numbered, graph_zero_note = normalize_findings(
         [scrub_narrative_text(f) for f in findings])
     explanation["key_findings"] = numbered

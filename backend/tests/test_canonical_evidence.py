@@ -48,14 +48,14 @@ class TestRuleEvidenceDerivation:
         rules = derive(features)
         names = {r["rule_name"] for r in rules}
         assert names == {
-            "High opposite trade ratio",
+            "Coordinated Trading Pattern",  # Updated: was "High opposite trade ratio"
             "High withdrawal frequency",
             "First withdrawal to new address",
         }
         assert sum(r["contribution"] for r in rules) == 80
         by_name = {r["rule_name"]: r for r in rules}
-        assert by_name["High opposite trade ratio"]["trigger"]["opposite_trade_ratio"] == 0.4524
-        assert by_name["High opposite trade ratio"]["threshold"] == "opposite_trade_ratio > 0.4"
+        assert by_name["Coordinated Trading Pattern"]["trigger"]["opposite_trade_ratio"] == 0.4524
+        assert by_name["Coordinated Trading Pattern"]["threshold"] == "opposite_trade_ratio > 0.4"
         assert by_name["High withdrawal frequency"]["trigger"]["withdrawal_frequency_24h"] == 14
         assert by_name["First withdrawal to new address"]["contribution"] == 20
 
@@ -137,7 +137,7 @@ class TestCanonicalEvidenceBuilder:
         assert ev["ml"]["score"] == 96.24 and ev["ml"]["primary_driver"] == "ML Pattern Detection"
         # unified findings: rules present, no ML attribution invented
         triggered = {r["rule_name"] for r in ev["rules"]["triggered"]}
-        assert {"High opposite trade ratio", "High withdrawal frequency",
+        assert {"Coordinated Trading Pattern", "High withdrawal frequency",
                 "First withdrawal to new address"} <= triggered
         assert ev["rules"]["consistent"] is True
         finding_names = {f["name"] for f in ev["findings"]}
@@ -166,6 +166,69 @@ class TestCanonicalEvidenceBuilder:
         ev = self.run(svc, self._event())
         assert ev["contextual"]["account_age_days"] == 112
         assert "New account with high activity" in ev["contextual"]["account_age_note"]
+
+    def test_sub_threshold_opposite_ratio_is_contextual_not_rule(self):
+        """U00010-like: 0 < ratio <= 0.4 is an observation, never a rule."""
+        svc = self._service_with_features({
+            "account_age_days": 100, "trade_frequency_24h": 10,
+            "opposite_trade_ratio": 0.3438, "shared_device_count": 0,
+            "withdrawal_frequency_24h": 0, "first_withdrawal_flag": False,
+        })
+        ev = self.run(svc, self._event(ml=87.02, rule=0.0))
+        # No coordinated-trading rule in derived rule evidence
+        triggered = {r["rule_name"] for r in ev["rules"]["triggered"]}
+        assert triggered == set(), f"expected no triggered rules, got {triggered}"
+        assert ev["rules"]["consistent"] is True
+        # The finding exists under the neutral observation name
+        names = {f["name"] for f in ev["findings"]}
+        assert "Opposite Trade Ratio" in names
+        assert "Coordinated Trading Pattern" not in names
+        # Finding carries no rule contribution/threshold (observation, not rule)
+        finding = next(f for f in ev["findings"] if f["name"] == "Opposite Trade Ratio")
+        assert "contribution" not in finding
+        assert "threshold" not in finding
+        assert finding["evidence_type"] == "feature"
+        assert finding["detection_sources"] == ["Feature"]
+        # Description states observed value and rule status explicitly,
+        # using the threshold-explicit business wording
+        assert "34.38% was observed, which is below the 40% threshold for the coordinated trading rule" \
+            in finding["evidence"]
+        # narrative-contract guard: no raw threshold syntax leaks
+        assert ">" not in finding["evidence"]
+
+    def test_above_threshold_opposite_ratio_is_rule_finding(self):
+        """ratio > 0.4 produces the rule finding merged with the feature source."""
+        svc = self._service_with_features({
+            "account_age_days": 112, "trade_frequency_24h": 0,
+            "opposite_trade_ratio": 0.4524, "shared_device_count": 0,
+            "withdrawal_frequency_24h": 14, "first_withdrawal_flag": True,
+        })
+        ev = self.run(svc, self._event())
+        names = {f["name"] for f in ev["findings"]}
+        assert "Coordinated Trading Pattern" in names
+        assert "Opposite Trade Ratio" not in names
+        finding = next(f for f in ev["findings"] if f["name"] == "Coordinated Trading Pattern")
+        # Rule and feature sources merge on the same conceptual finding
+        assert set(finding["detection_sources"]) == {"Rule", "Feature"}
+        assert finding["contribution"] == 35
+        # The rule path upserts first, so its authoritative description wins —
+        # threshold-explicit business wording
+        assert "45.24% exceeded the 40% threshold, triggering the coordinated trading rule" \
+            in finding["evidence"]
+        assert ">" not in finding["evidence"]
+
+    def test_above_threshold_wording_is_threshold_explicit(self):
+        """ratio > 0.4 evidence uses the threshold-exceeded business wording."""
+        svc = self._service_with_features({
+            "account_age_days": 112, "trade_frequency_24h": 0,
+            "opposite_trade_ratio": 0.52, "shared_device_count": 0,
+            "withdrawal_frequency_24h": 0, "first_withdrawal_flag": False,
+        })
+        ev = self.run(svc, self._event(ml=50.0, rule=35.0))
+        finding = next(f for f in ev["findings"] if f["name"] == "Coordinated Trading Pattern")
+        assert "52.00% exceeded the 40% threshold, triggering the coordinated trading rule" \
+            in finding["evidence"]
+        assert ">" not in finding["evidence"]
 
 
 class TestLlmPromptIncludesEvidence:

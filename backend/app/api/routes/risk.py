@@ -372,7 +372,12 @@ def _generate_model_based_explanation(
     # Add specific risk factors if available
     for factor in factors[:3]:  # Top 3 factors
         factor_name = factor.get('factor_name', 'Unknown factor')
-        key_findings.append(f"Elevated {factor_name}")
+
+        # Use canonical finding names directly for narrative contract compatibility
+        # The narrative contract merges findings by exact canonical name matching
+        # "Opposite Trade Ratio" is already canonical (neutral observation)
+        # Other factors are canonical findings from RiskFactor names
+        key_findings.append(factor_name)
 
     # If no findings, add default
     if not key_findings:
@@ -1319,6 +1324,7 @@ async def _explain_request_flow(
             + [r["rule_name"] for r in
                ((canonical_evidence.get("rules") or {}).get("triggered") or [])]
         ),
+        canonical_findings=canonical_evidence.get("findings") or [],
     )
 
     # ============================================================

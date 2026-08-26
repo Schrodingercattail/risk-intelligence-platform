@@ -67,12 +67,33 @@ class EvidenceService:
     # RiskFactor rows are CONTEXTUAL / feature-level descriptive evidence (see
     # RiskScoringService._create_risk_factors) — they are NOT ML findings.
     # This mapping only records which unified finding a factor describes.
+    # Note: opposite_trade_ratio is handled separately below due to threshold semantics.
     _FEATURE_FINDING_NAMES = {
         "shared_device_count": "Shared Device Relationships",
         "linked_account_count": "Linked Account Network",
-        "opposite_trade_ratio": "Coordinated Trading Pattern",
         "trade_frequency_24h": "High Trading Frequency",
         "withdrawal_risk_score": "Abnormal Withdrawal Behavior",
+    }
+
+    # Threshold-based finding names (rule-triggered vs contextual)
+    # These are handled separately because the finding name depends on threshold
+    _THRESHOLD_FINDINGS = {
+        "opposite_trade_ratio": {
+            "threshold": 0.4,
+            "rule_triggered_name": "Coordinated Trading Pattern",
+            "contextual_name": "Opposite Trade Ratio",
+        }
+    }
+
+    # Investigator-facing evidence text for feature findings with no persisted
+    # RiskFactor description (stale/historical cases). Raw field names would
+    # violate the narrative contract if this text reaches the narrative via
+    # the completeness append.
+    _FEATURE_FALLBACK_EVIDENCE = {
+        "shared_device_count": "{value} linked account(s) through shared devices",
+        "linked_account_count": "{value} connected account(s) detected",
+        "trade_frequency_24h": "{value} trades were recorded in 24 hours",
+        "withdrawal_risk_score": "abnormal withdrawal behavior was observed (elevated risk indicator)",
     }
 
     async def get_canonical_evidence(
@@ -252,13 +273,64 @@ class EvidenceService:
                 )
                 desc = (factor.get("factor_description") if isinstance(factor, dict)
                         else getattr(factor, "factor_description", None)) if factor else None
+                # Fallback text must be investigator-facing (no raw field
+                # names): this string can surface in the user-facing narrative
+                # via the narrative-contract completeness append.
+                fallback_desc = self._FEATURE_FALLBACK_EVIDENCE.get(feat_key)
                 upsert(
                     finding_name,
                     ["Feature"],
                     "feature",
-                    desc or f"{finding_name}: observed {feat_key} = {value}",
+                    desc or (fallback_desc.format(value=value) if fallback_desc
+                             else f"{finding_name}: observed value {value}"),
                     observed={feat_key: value},
                     supporting_feature=feat_key,
+                )
+
+            # --- Threshold-based findings (opposite_trade_ratio) ---
+            # Handle separately to provide semantic clarity:
+            # - "Opposite Trade Ratio": contextual observation (below threshold)
+            # - "Coordinated Trading Pattern": rule-triggered (above threshold)
+            # This uses CURRENT semantic rules on the source FeatureTable value,
+            # NOT the historical RiskFactor label (which may not exist for old cases).
+            opp_ratio = feature_evidence.get("opposite_trade_ratio")
+            if opp_ratio is not None and opp_ratio > 0:
+                threshold_config = self._THRESHOLD_FINDINGS.get("opposite_trade_ratio", {})
+                rule_threshold = threshold_config.get("threshold", 0.4)
+                rule_triggered = opp_ratio > rule_threshold
+
+                # Use CURRENT semantic naming based on threshold
+                factor_name = (
+                    threshold_config.get("rule_triggered_name") if rule_triggered
+                    else threshold_config.get("contextual_name")
+                )
+
+                # Generate description using CURRENT semantic rules. The
+                # narrative MUST distinguish the below-threshold OBSERVATION
+                # from the threshold-triggered RULE — these strings feed the
+                # LLM prompt (as evidence) and the completeness fallback text.
+                percentage = opp_ratio * 100
+                threshold_percent = rule_threshold * 100
+                if rule_triggered:
+                    desc = (
+                        f"An opposite-trade ratio of {percentage:.2f}% exceeded the "
+                        f"{threshold_percent:.0f}% threshold, triggering the "
+                        f"coordinated trading rule."
+                    )
+                else:
+                    desc = (
+                        f"An opposite-trade ratio of {percentage:.2f}% was observed, "
+                        f"which is below the {threshold_percent:.0f}% threshold for "
+                        f"the coordinated trading rule."
+                    )
+
+                upsert(
+                    factor_name,
+                    ["Feature"],
+                    "feature",
+                    desc,
+                    observed={"opposite_trade_ratio": opp_ratio},
+                    supporting_feature="opposite_trade_ratio",
                 )
 
         # --- Contextual account age (never a rule by itself) ---
@@ -765,12 +837,19 @@ class EvidenceService:
             })
 
         # Rule: High opposite trade ratio (frequent alternating buy/sell behavior)
+        # Rule name matches the factor name for proper evidence merging
         opp_ratio = feature_evidence.get("opposite_trade_ratio")
         if opp_ratio and opp_ratio > 0.4:
             triggered_rules.append({
-                "rule_name": "High opposite trade ratio",
+                "rule_name": "Coordinated Trading Pattern",  # Matches factor name for merging
                 "severity": "HIGH",
-                "description": f"Opposite trade ratio of {opp_ratio:.1%} indicates frequent alternating buy/sell behavior",
+                # Threshold-explicit business wording (the narrative must state
+                # the rule fired because the ratio exceeded the 40% threshold);
+                # mirrors the threshold-finding description above.
+                "description": (
+                    f"An opposite-trade ratio of {opp_ratio:.2%} exceeded the 40% "
+                    f"threshold, triggering the coordinated trading rule."
+                ),
                 "trigger": {"opposite_trade_ratio": round(float(opp_ratio), 4)},
                 "threshold": "opposite_trade_ratio > 0.4",
                 "contribution": 35,

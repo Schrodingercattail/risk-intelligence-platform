@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 from anthropic import Anthropic
 
 from app.config import settings
+from app.utils.pluralization import counted_noun, pluralize, was_were
 
 
 # Constants for sanitization
@@ -442,12 +443,23 @@ class LLMExplanationService:
             "an opposite-trade ratio of {pct}% exceeded the {threshold}% "
             "threshold, triggering the coordinated trading rule"
         ),
-        "shared_device_count": "{value} linked account(s) through shared devices",
-        "connected_accounts": "{value} connected accounts were detected",
+        "shared_device_count": "{count} {noun} {was_were} used by this account and other users",
+        "connected_accounts": "{count} {noun} {was_were} detected through shared devices",
         "ml_score": "ML signal of {value}/100",
         # withdrawal_risk_score is the fraction of withdrawals sent to newly
         # encountered addresses (0..1) — never rendered as an internal sub-score.
         "withdrawal_risk_score": "{pct}% of withdrawals were sent to newly encountered addresses",
+    }
+
+    # Observed fields whose evidence sentence states a COUNT; the template's
+    # {noun}/{was_were} are derived from the value (see _humanize_observed).
+    # Observed fields whose evidence sentence states a COUNT; the template's
+    # {noun}/{was_were} are derived from the value (see _humanize_observed).
+    # The noun pair carries the qualifier ("shared device"), so the template
+    # stays a plain "{count} {noun} {was_were} ..." sentence.
+    _COUNTED_FIELD_NOUNS = {
+        "shared_device_count": ("shared device", "shared devices"),
+        "connected_accounts": ("connected account", "connected accounts"),
     }
 
     def _humanize_observed(self, finding_name: str, observed: Dict[str, Any]) -> str:
@@ -493,6 +505,21 @@ class LLMExplanationService:
                     parts.append(template.format(pct=f"{float(value) * 100:.2f}"))
                 except (TypeError, ValueError):
                     parts.append(f"{key} = {value}")
+            elif key in self._COUNTED_FIELD_NOUNS:
+                # Count-bearing fields render count-aware grammar (never
+                # "1 linked account(s)"), and shared_device_count is named
+                # for what it counts (devices, not accounts).
+                try:
+                    count = int(value)
+                except (TypeError, ValueError):
+                    parts.append(f"{key} = {value}")
+                    continue
+                singular, plural = self._COUNTED_FIELD_NOUNS[key]
+                parts.append(template.format(
+                    count=count,
+                    noun=pluralize(count, singular, plural),
+                    was_were=was_were(count),
+                ))
             else:
                 try:
                     parts.append(template.format(value=value))
@@ -594,10 +621,11 @@ class LLMExplanationService:
             prompt_parts.append("")
 
         if sanitized_graph_data and sanitized_graph_data.get('connected_count', 0) > 0:
-            connected_count = sanitized_graph_data['connected_count']
+            connected_count = int(sanitized_graph_data['connected_count'])
             prompt_parts.append(
                 f"### Network Analysis\n"
-                f"- This user is connected to {connected_count} other account(s)\n"
+                f"- This user is connected to "
+                f"{counted_noun(connected_count, 'other account', 'other accounts')}\n"
             )
 
         prompt_parts.extend([

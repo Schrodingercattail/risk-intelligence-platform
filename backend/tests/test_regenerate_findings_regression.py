@@ -167,7 +167,6 @@ class TestRegenerateFindingsRegression:
             "Shared Device Relationships",
             "Linked Account Network",
             "High Trading Frequency",
-            "Abnormal Withdrawal Behavior",
             "Opposite Trade Ratio",
         ):
             name_sig = tuple(_head_signature(name))
@@ -179,6 +178,16 @@ class TestRegenerateFindingsRegression:
             assert len(matching) == 1, \
                 f"canonical finding {name!r} appears {len(matching)} times (must be once)"
         joined = "\n".join(findings)
+
+        # --- 3b. Semantically redundant finding NOT emitted ---
+        # withdrawal_risk_score (fraction of withdrawals to new addresses) is
+        # the same observation as first_withdrawal_flag; it must not surface
+        # as a second, separate finding.
+        assert "abnormal withdrawal behavior" not in joined.lower(), \
+            "redundant 'Abnormal Withdrawal Behavior' finding emitted alongside " \
+            "'First withdrawal to new address'"
+        assert "newly encountered addresses" in joined.lower(), \
+            "the new-address ratio must still be stated on the surviving finding"
 
         # --- 4. U00010 threshold semantics ---
         assert ratio is not None and 0 < ratio <= 0.4, \

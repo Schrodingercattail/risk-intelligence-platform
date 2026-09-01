@@ -16,6 +16,7 @@ from app.models.database import (
 )
 from app.config import settings
 from app.ml.model import MLInferenceService
+from app.utils.pluralization import counted_noun, was_were
 
 
 class RiskScoringService:
@@ -379,11 +380,20 @@ class RiskScoringService:
         # "Account Age" (context), NOT "New Account Risk" (which would imply a threshold/rule).
 
         # Base factor mapping (excluding opposite_trade_ratio which is handled specially)
+        #
+        # withdrawal_risk_score is deliberately ABSENT. It is the fraction of
+        # withdrawals sent to newly encountered addresses — the SAME underlying
+        # observation as first_withdrawal_flag (both derive from
+        # Withdrawal.is_new_address; flag is true iff ratio > 0, verified
+        # across all 2001 feature rows). Persisting it produced a second,
+        # redundant finding ("Abnormal Withdrawal Behavior") for a condition
+        # already reported as the "First withdrawal to new address" rule. The
+        # ratio now travels with that rule finding instead (see
+        # EvidenceService._derive_rule_evidence).
         factor_mapping = {
             "shared_device_count": "Shared Device Relationships",
             "linked_account_count": "Linked Account Network",
             "trade_frequency_24h": "High Trading Frequency",
-            "withdrawal_risk_score": "Abnormal Withdrawal Behavior",
             "account_age_days": "Account Age",
         }
 
@@ -425,12 +435,25 @@ class RiskScoringService:
                 self.db.add(factor)
 
     def _get_factor_description(self, factor_name: str, value: Any) -> str:
-        """Get human-readable description for a factor."""
+        """Get human-readable description for a factor.
+
+        Count-bearing descriptions derive their noun and verb form from the
+        value, so count == 1 reads grammatically ("1 shared device was used")
+        — the persisted description is authoritative input to the explanation
+        prompt. shared_device_count counts DEVICES (not accounts); the linked
+        account count is the separate "Linked Account Network" factor.
+        """
+        count = int(value)
         descriptions = {
-            "Shared Device Relationships": f"{int(value)} linked accounts through shared devices",
-            "Linked Account Network": f"{int(value)} connected accounts detected",
-            "High Trading Frequency": f"{int(value)} trades in 24h period",
-            "Abnormal Withdrawal Behavior": f"Risk score: {value:.2f}",
+            "Shared Device Relationships": (
+                f"{counted_noun(count, 'shared device', 'shared devices')} "
+                f"{was_were(count)} used by this account and other users"
+            ),
+            "Linked Account Network": (
+                f"{counted_noun(count, 'connected account', 'connected accounts')} "
+                f"{was_were(count)} detected through shared devices"
+            ),
+            "High Trading Frequency": f"{count} trades in 24h period",
             # Contextual account-age evidence. Wording must NOT imply a policy threshold, a
             # "new account" classification, or any rule trigger. (The thresholded new-account
             # rule lives in _calculate_rule_score as "New account with high activity".)

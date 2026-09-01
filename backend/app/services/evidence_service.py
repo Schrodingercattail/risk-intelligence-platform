@@ -11,6 +11,8 @@ from sqlalchemy import select, desc
 from decimal import Decimal
 from datetime import datetime, timezone
 
+from app.utils.pluralization import counted_noun, pluralize, was_were
+
 
 class EvidenceService:
     """
@@ -31,12 +33,22 @@ class EvidenceService:
         """Initialize evidence service with database session."""
         self.db = db
 
-    async def get_case_evidence(self, user_id: str) -> Dict[str, Any]:
+    async def get_case_evidence(
+        self, user_id: str, expose_complete_records: bool = False,
+    ) -> Dict[str, Any]:
         """
-        Get complete evidence package for a user's risk case.
+        Get evidence package for a user's risk case.
 
         Args:
             user_id: User to get evidence for
+            expose_complete_records: when True, transaction/withdrawal
+                evidence returns ALL stored records for the user instead of
+                the default top-5 representative subset (top transactions by
+                value / top withdrawals by amount). Callers should request
+                this only when the investigation has actually entered the
+                concrete-evidence level (e.g. "show all withdrawals
+                supporting this finding") — aggregate navigation previews
+                keep the bounded default.
 
         Returns:
             Evidence dict with all available evidence types
@@ -45,8 +57,12 @@ class EvidenceService:
         risk_summary = await self._get_risk_summary(user_id)
 
         # Gather evidence from all sources
-        transaction_evidence = await self._get_transaction_evidence(user_id)
-        withdrawal_evidence = await self._get_withdrawal_evidence(user_id)
+        transaction_evidence = await self._get_transaction_evidence(
+            user_id, limit=None if expose_complete_records else 5,
+        )
+        withdrawal_evidence = await self._get_withdrawal_evidence(
+            user_id, limit=None if expose_complete_records else 5,
+        )
         network_evidence = await self._get_network_evidence(user_id)
         risk_factor_evidence = await self._get_risk_factor_evidence(user_id)
         feature_evidence = await self._get_feature_evidence(user_id)
@@ -68,11 +84,20 @@ class EvidenceService:
     # RiskScoringService._create_risk_factors) — they are NOT ML findings.
     # This mapping only records which unified finding a factor describes.
     # Note: opposite_trade_ratio is handled separately below due to threshold semantics.
+    #
+    # withdrawal_risk_score is deliberately ABSENT. It is the fraction of
+    # withdrawals sent to newly encountered addresses, which is the SAME
+    # underlying observation as first_withdrawal_flag (both derive from
+    # Withdrawal.is_new_address; across all 2001 feature rows the two are
+    # logically equivalent — flag is true iff ratio > 0). Emitting both
+    # produced two findings for one condition ("First withdrawal to new
+    # address" + "Abnormal Withdrawal Behavior"). The ratio instead travels
+    # with the surviving rule finding (see _derive_rule_evidence), so no
+    # information is lost and the finding set has one finding per condition.
     _FEATURE_FINDING_NAMES = {
         "shared_device_count": "Shared Device Relationships",
         "linked_account_count": "Linked Account Network",
         "trade_frequency_24h": "High Trading Frequency",
-        "withdrawal_risk_score": "Abnormal Withdrawal Behavior",
     }
 
     # Threshold-based finding names (rule-triggered vs contextual)
@@ -89,12 +114,47 @@ class EvidenceService:
     # RiskFactor description (stale/historical cases). Raw field names would
     # violate the narrative contract if this text reaches the narrative via
     # the completeness append.
+    # Templates use {count}, {noun} and {was_were}; _FEATURE_FALLBACK_NOUNS
+    # supplies the noun pair so the sentence is grammatical for count == 1.
+    # Wording names what the feature actually counts (shared_device_count
+    # counts DEVICES, not accounts).
     _FEATURE_FALLBACK_EVIDENCE = {
-        "shared_device_count": "{value} linked account(s) through shared devices",
-        "linked_account_count": "{value} connected account(s) detected",
-        "trade_frequency_24h": "{value} trades were recorded in 24 hours",
-        "withdrawal_risk_score": "abnormal withdrawal behavior was observed (elevated risk indicator)",
+        "shared_device_count": "{count} {noun} {was_were} used by this account and other users",
+        "linked_account_count": "{count} {noun} {was_were} detected through shared devices",
+        "trade_frequency_24h": "{count} {noun} {was_were} recorded in 24 hours",
     }
+
+    # Noun each fallback template pluralizes on its observed count.
+    _FEATURE_FALLBACK_NOUNS = {
+        "shared_device_count": ("shared device", "shared devices"),
+        "linked_account_count": ("connected account", "connected accounts"),
+        "trade_frequency_24h": ("trade", "trades"),
+    }
+
+    @classmethod
+    def _render_fallback_evidence(cls, feat_key: str, value: Any) -> Optional[str]:
+        """Render a feature finding's fallback evidence, count-aware.
+
+        The old fallbacks baked in a plural ("{value} linked account(s)") so
+        count == 1 was ungrammatical, and mislabelled shared_device_count
+        (a DEVICE count) as an account count. Both are authoritative output:
+        the string can reach the user-facing narrative through the
+        narrative-contract completeness append.
+        """
+        template = cls._FEATURE_FALLBACK_EVIDENCE.get(feat_key)
+        if template is None:
+            return None
+        try:
+            count = int(value)
+        except (TypeError, ValueError):
+            return None
+        singular, plural = cls._FEATURE_FALLBACK_NOUNS.get(
+            feat_key, (feat_key, f"{feat_key}s"))
+        return template.format(
+            count=count,
+            noun=pluralize(count, singular, plural),
+            was_were=was_were(count),
+        )
 
     async def get_canonical_evidence(
         self,
@@ -243,7 +303,8 @@ class EvidenceService:
                     "Shared Device Relationships",
                     ["Graph"],
                     "graph",
-                    f"{shared} linked account(s) through shared devices",
+                    f"{counted_noun(shared, 'shared device', 'shared devices')} "
+                    f"{was_were(shared)} used by this account and other users",
                     observed={"shared_device_count": shared},
                     supporting_feature="shared_device_count",
                 )
@@ -251,7 +312,8 @@ class EvidenceService:
                 "Linked Account Network",
                 ["Graph"],
                 "graph",
-                f"{connected} connected account(s) detected by network analysis",
+                f"{counted_noun(connected, 'connected account', 'connected accounts')} "
+                    f"{was_were(connected)} detected through shared devices",
                 observed={"connected_accounts": connected},
                 supporting_feature="linked_account_count",
             )
@@ -276,13 +338,12 @@ class EvidenceService:
                 # Fallback text must be investigator-facing (no raw field
                 # names): this string can surface in the user-facing narrative
                 # via the narrative-contract completeness append.
-                fallback_desc = self._FEATURE_FALLBACK_EVIDENCE.get(feat_key)
+                fallback_desc = self._render_fallback_evidence(feat_key, value)
                 upsert(
                     finding_name,
                     ["Feature"],
                     "feature",
-                    desc or (fallback_desc.format(value=value) if fallback_desc
-                             else f"{finding_name}: observed value {value}"),
+                    desc or fallback_desc or f"{finding_name}: observed value {value}",
                     observed={feat_key: value},
                     supporting_feature=feat_key,
                 )
@@ -427,22 +488,26 @@ class EvidenceService:
             methods.append("Graph Network")
         return methods
 
-    async def _get_transaction_evidence(self, user_id: str, limit: int = 5) -> List[Dict[str, Any]]:
+    async def _get_transaction_evidence(self, user_id: str, limit: int | None = 5) -> List[Dict[str, Any]]:
         """
         Get suspicious transaction evidence.
 
         Returns top transactions by value (price * quantity).
         These are transactions that may warrant investigation.
+        limit=None returns ALL stored transactions for the user
+        (concrete-evidence mode); an integer limit keeps the bounded
+        representative preview.
         """
         from app.models.database import Trade
 
-        # Get top trades by calculated value
-        result = await self.db.execute(
+        query = (
             select(Trade)
             .where(Trade.user_id == user_id)
             .order_by(desc(Trade.price * Trade.quantity))
-            .limit(limit)
         )
+        if limit is not None:
+            query = query.limit(limit)
+        result = await self.db.execute(query)
 
         transactions = []
         for trade in result.scalars().all():
@@ -472,21 +537,26 @@ class EvidenceService:
         else:
             return "Recent trading activity"
 
-    async def _get_withdrawal_evidence(self, user_id: str, limit: int = 5) -> List[Dict[str, Any]]:
+    async def _get_withdrawal_evidence(self, user_id: str, limit: int | None = 5) -> List[Dict[str, Any]]:
         """
         Get withdrawal evidence.
 
         Returns top withdrawals by amount.
         Highlights withdrawals to new addresses which may indicate risk.
+        limit=None returns ALL stored withdrawals for the user
+        (concrete-evidence mode); an integer limit keeps the bounded
+        representative preview.
         """
         from app.models.database import Withdrawal
 
-        result = await self.db.execute(
+        query = (
             select(Withdrawal)
             .where(Withdrawal.user_id == user_id)
             .order_by(desc(Withdrawal.amount))
-            .limit(limit)
         )
+        if limit is not None:
+            query = query.limit(limit)
+        result = await self.db.execute(query)
 
         withdrawals = []
         for w in result.scalars().all():
@@ -880,6 +950,16 @@ class EvidenceService:
             })
 
         # Rule: First withdrawal (to a new address, with activity present)
+        # withdrawal_risk_score (fraction of withdrawals to new addresses) is
+        # the SAME underlying observation as first_withdrawal_flag — both are
+        # derived from Withdrawal.is_new_address (feature_engineering:
+        # first_withdrawal_flag = any(is_new_address), withdrawal_risk_score =
+        # count(is_new_address)/total). The separate "Abnormal Withdrawal
+        # Behavior" feature finding is therefore suppressed in
+        # get_canonical_evidence, and the ratio travels HERE so the one
+        # surviving finding states the full new-address exposure. Including it
+        # in the trigger also gets it rendered as a business percentage by
+        # _humanize_observed (never a raw 0..1 sub-score).
         first_withdrawal = feature_evidence.get("first_withdrawal_flag")
         if first_withdrawal and withdrawal_freq is not None:
             triggered_rules.append({
@@ -887,11 +967,14 @@ class EvidenceService:
                 "severity": "MEDIUM",
                 "description": (
                     "First withdrawal to a new address flagged while withdrawal "
-                    f"activity is present ({withdrawal_freq} in 24h)"
+                    f"activity is present ({withdrawal_freq} in 24h); "
+                    f"{float(feature_evidence.get('withdrawal_risk_score') or 0) * 100:.2f}% "
+                    "of withdrawals were sent to newly encountered addresses"
                 ),
                 "trigger": {
                     "first_withdrawal_flag": bool(first_withdrawal),
                     "withdrawal_frequency_24h": withdrawal_freq,
+                    "withdrawal_risk_score": feature_evidence.get("withdrawal_risk_score"),
                 },
                 "threshold": "first_withdrawal_flag = true AND withdrawal_frequency_24h present",
                 "contribution": 20,

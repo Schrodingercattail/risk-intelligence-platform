@@ -71,9 +71,17 @@ class TestCanonicalEvidenceStillComplete:
         assert rule_f["observed_value"] == {"account_age_days": 6,
                                             "trade_frequency_24h": 54}
         assert "Rule" in rule_f["detection_sources"]
-        # withdrawal risk score feature retained in canonical (via factor findings)
-        awb = next(f for f in ev["findings"] if f["name"] == "Abnormal Withdrawal Behavior")
-        assert awb["observed_value"]["withdrawal_risk_score"] == 1.0
+        # withdrawal_risk_score (fraction of withdrawals to new addresses) is
+        # the SAME observation as first_withdrawal_flag — it must NOT produce
+        # its own finding; it travels on the surviving rule finding so the
+        # case still states its full new-address exposure.
+        names = {f["name"] for f in ev["findings"]}
+        assert "Abnormal Withdrawal Behavior" not in names, \
+            "redundant feature finding re-introduced for the first-withdrawal condition"
+        fw = next(f for f in ev["findings"]
+                  if f["name"] == "First withdrawal to new address")
+        assert fw["observed_value"]["withdrawal_risk_score"] == 1.0
+        assert fw["contribution"] == 20
 
 
 class TestPromptPresentationLayer:
@@ -116,12 +124,14 @@ class TestPromptPresentationLayer:
             assert field not in self.prompt, f"raw field leaked: {field}"
 
     def test_withdrawal_behavior_finding_in_prompt_business_language(self):
-        # Canonical evidence is authoritative: EVERY canonical finding —
-        # including the Abnormal Withdrawal Behavior feature finding — is
+        # Canonical evidence is authoritative: EVERY canonical finding is
         # supplied to the LLM, rendered in business language (never the raw
-        # sub-score or field name).
-        assert "abnormal withdrawal behavior" in self.low, \
-            "canonical finding must be supplied to the LLM (no intentional omission)"
+        # sub-score or field name). withdrawal_risk_score no longer forms its
+        # own finding — it is the same observation as first_withdrawal_flag —
+        # so its business rendering must reach the prompt ON the surviving
+        # rule finding's evidence.
+        assert "abnormal withdrawal behavior" not in self.low, \
+            "redundant feature finding still supplied to the LLM"
         assert "withdrawals were sent to newly encountered addresses" in self.low
         awb_line = self.ev_findings_line()
         assert "withdrawal risk score" not in awb_line.lower(), \
@@ -135,9 +145,10 @@ class TestPromptPresentationLayer:
             assert "never" in context, f"non-instruction mention: {context!r}"
 
     def ev_findings_line(self):
-        # the prompt line carrying the AWB finding's evidence
+        # the prompt line carrying the first-withdrawal finding's evidence
+        # (which now also carries the new-address ratio)
         for line in self.prompt.splitlines():
-            if "abnormal withdrawal behavior" in line.lower():
+            if "newly encountered addresses" in line.lower():
                 return line
         return ""
 

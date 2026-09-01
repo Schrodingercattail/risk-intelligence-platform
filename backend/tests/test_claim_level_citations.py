@@ -35,7 +35,6 @@ U00010_FINDINGS = [
     "5. Linked Account Network — 18 connected accounts",
     "6. Coordinated Trading Pattern",
     "7. High Trading Frequency — 54 trades in 24h",
-    "8. Abnormal Withdrawal Behavior",
 ]
 
 

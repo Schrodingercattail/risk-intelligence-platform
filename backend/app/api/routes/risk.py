@@ -1730,6 +1730,7 @@ async def _explain_request_flow(
 @router.get("/cases/{user_id}/evidence", response_model=RiskEvidenceResponse)
 async def get_case_evidence(
     user_id: str,
+    expose_complete_records: bool = False,
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -1745,12 +1746,20 @@ async def get_case_evidence(
     - Risk factor evidence: Detailed factors from risk event
     - Feature evidence: ML feature values that contributed to score
     - Rule evidence: Derived triggered rules based on feature values
+
+    expose_complete_records=true returns ALL stored transaction/withdrawal
+    records for the user instead of the default top-5 representative subset.
+    Intended for investigation flows that have reached the concrete-evidence
+    level ("show all withdrawals supporting this finding"); navigation /
+    intake previews keep the bounded default subset.
     """
     from app.services.evidence_service import EvidenceService
     from app.models.schemas import RiskEvidenceResponse
 
     service = EvidenceService(db)
-    evidence = await service.get_case_evidence(user_id)
+    evidence = await service.get_case_evidence(
+        user_id, expose_complete_records=expose_complete_records,
+    )
 
     return RiskEvidenceResponse(**evidence)
 

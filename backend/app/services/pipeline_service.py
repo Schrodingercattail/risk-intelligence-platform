@@ -150,12 +150,19 @@ class PipelineService:
         from sqlalchemy import delete, select, func
         from app.models.database import (
             RiskFactor, RiskEvent, ClusterMember, AccountCluster,
-            FeatureTable, ModelMetadata, FeatureImportance, Case, Withdrawal, Trade, Device, User
+            FeatureTable, ModelMetadata, FeatureImportance, Case, Withdrawal, Trade, Device, User,
+            CaseExplanation,
         )
 
         counts = {}
 
         # Delete in order of dependencies (child tables first)
+        # Persisted explanation artifacts reference BOTH users.user_id and
+        # risk_events.id — delete them before either parent (see
+        # clear_pipeline_data).
+        result = await self.db.execute(delete(CaseExplanation))
+        counts["case_explanations"] = result.rowcount
+
         # Risk management
         result = await self.db.execute(delete(RiskFactor))
         counts["risk_factors"] = result.rowcount
@@ -219,7 +226,8 @@ class PipelineService:
         from sqlalchemy import delete, select, func
         from app.models.database import (
             RiskFactor, RiskEvent, ClusterMember, AccountCluster,
-            FeatureTable, Case, Withdrawal, Trade, Device, User
+            FeatureTable, Case, Withdrawal, Trade, Device, User,
+            CaseExplanation,
         )
 
         # Log active model count before clearing
@@ -233,6 +241,13 @@ class PipelineService:
         }
 
         # Delete in order of dependencies (child tables first)
+        # Persisted explanation artifacts reference BOTH users.user_id and
+        # risk_events.id, so they must go before either parent is deleted —
+        # otherwise the delete(RiskEvent) below raises a ForeignKeyViolation
+        # and the whole reset rolls back.
+        result = await self.db.execute(delete(CaseExplanation))
+        counts["case_explanations"] = result.rowcount
+
         # Risk management
         result = await self.db.execute(delete(RiskFactor))
         counts["risk_factors"] = result.rowcount

@@ -339,12 +339,19 @@ class HistoricalTrainingService:
         """
         from app.models.database import (
             User, Device, Trade, Withdrawal, FeatureTable,
-            RiskFactor, RiskEvent, ClusterMember, AccountCluster
+            RiskFactor, RiskEvent, ClusterMember, AccountCluster,
+            CaseExplanation
         )
         from sqlalchemy import delete
         from datetime import datetime
 
-        # Clear existing data (respecting foreign key dependencies)
+        # Clear existing data (respecting foreign key dependencies).
+        # Persisted explanation artifacts reference BOTH users.user_id and
+        # risk_events.id, so they must be deleted before either parent —
+        # otherwise delete(RiskEvent) raises a ForeignKeyViolation once any
+        # explanation has been persisted (same constraint the pipeline reset
+        # paths honor).
+        await self.db.execute(delete(CaseExplanation))
         await self.db.execute(delete(RiskFactor))
         await self.db.execute(delete(RiskEvent))
         await self.db.execute(delete(ClusterMember))

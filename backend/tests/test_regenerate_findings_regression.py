@@ -143,7 +143,14 @@ class TestRegenerateFindingsRegression:
 
         # --- 1. Explanation-level only: risk event untouched ---
         assert after == before, f"risk event changed: {before} -> {after}"
-        assert float(before["risk_score"]) == 87.02
+        # Do NOT pin an absolute score here: the value must follow from the
+        # deterministic scoring of the CURRENT data (graph cluster risk is a
+        # pure function of cluster structure — see
+        # test_graph_score_determinism.py). Pinning a literal would break on
+        # every legitimate data refresh, and previously encoded a
+        # nondeterministic random draw.
+        assert 0 < float(before["risk_score"]) <= 100
+        assert before["risk_level"] in ("CRITICAL", "HIGH", "MEDIUM", "LOW")
         assert before["risk_level"] == "CRITICAL"
 
         # --- 2/3. Findings non-empty and complete ---

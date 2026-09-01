@@ -9,6 +9,7 @@ import { Table, SimpleMetricTooltip } from '../components/UI';
 import { DetectionSourceChart, RiskScoreDistributionChart, RiskScoreAnalyticsCard, DetectionPatternChart } from '../components/Charts';
 import { RiskLevel } from '../types';
 import { riskApi, RiskOverview } from '../services/api';
+import { caseIdFromUser } from '../utils/caseId';
 
 // ============================================
 // SUB-COMPONENTS
@@ -275,11 +276,13 @@ export default function RiskCommandCenter() {
 
   // Transform backend case data to frontend format
   const transformedCases = useMemo(() => {
-    const cases = investigationCases.map((item, idx) => {
-      // Generate unique case_id using global index (accounting for pagination)
-      const globalIndex = (currentPage - 1) * PAGE_SIZE + idx + 1;
+    const cases = investigationCases.map((item) => {
+      // Case ID derives from the case's OWN identity, never from its position
+      // in the queue. The queue is sorted by risk score, so a position-based
+      // id would relabel every case whenever scores change — an entity
+      // identifier must be stable (see utils/caseId.ts).
       return {
-        case_id: `CASE-${String(globalIndex).padStart(5, '0')}`,
+        case_id: caseIdFromUser(item.user_id),
         user_id: item.user_id,
         risk_score: Number(item.risk_score),
         risk_level: item.risk_level as RiskLevel,
@@ -287,11 +290,8 @@ export default function RiskCommandCenter() {
         recommended_action: item.recommended_action || 'Review case',
       };
     });
-    console.log('=== Transformed Cases ===');
-    console.log('Transformed cases:', cases);
-    console.log('First transformed case:', cases[0]);
     return cases;
-  }, [investigationCases, currentPage]);
+  }, [investigationCases]);
 
   // Filter cases - now handled by backend API
   const filteredCases = transformedCases;
@@ -576,8 +576,10 @@ export default function RiskCommandCenter() {
               columns={tableColumns}
               data={tableData}
               onRowClick={(row) => {
-                const match = row.case_id?.toString?.()?.match(/user_[0-9]+/);
-                if (match) setSelectedUser(match[0]);
+                // Navigate by the case's actual user identity. (The previous
+                // case_id regex matched a "user_N" format that never existed,
+                // so row clicks silently did nothing.)
+                if (row.user_id) setSelectedUser(row.user_id);
               }}
               emptyMessage="No risk signals detected"
             />

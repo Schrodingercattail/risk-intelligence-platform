@@ -10,6 +10,7 @@
 import { useState, useEffect } from 'react';
 import { riskApi, PolicyCitation, Explanation } from '../services/api';
 import { groupKeyFindings, splitNumberedSteps, splitBoldSegments } from '../utils/explanationFormat';
+import { caseIdFromUser } from '../utils/caseId';
 
 // Simple tooltip component
 function Tooltip({ content, children }: { content: string; children: React.ReactNode }) {
@@ -143,10 +144,10 @@ interface InvestigationCase {
   detection_methods?: string[];
 }
 
-// Transform backend API data to InvestigationCase format
+// Transform backend API data to InvestigationCase format.
+// (No list-position parameter: the case id must not depend on list order.)
 function transformToInvestigationCase(
-  item: any,
-  idx: number
+  item: any
 ): InvestigationCase {
   // Generate risk factors from primary_reason
   const riskFactors: Array<{ name: string; severity: 'critical' | 'high' | 'medium' | 'low' }> = item.primary_reason
@@ -175,13 +176,11 @@ function transformToInvestigationCase(
     contributingFactors.push('Risk signals detected through analysis');
   }
 
-  // Generate unique case_id from user_id
-  // Extract numeric part from user_id (e.g., "U01401" -> "01401")
-  const userIdNumber = item.user_id ? item.user_id.replace(/\D/g, '') : '';
-  const caseIdNumber = userIdNumber || String(idx + 1).padStart(5, '0');
-
+  // Case ID derives from the case's OWN identity (numeric part of user_id).
+  // Never fall back to a list position: an entity identifier must be stable
+  // across sort orders, filters and pages (see utils/caseId.ts).
   return {
-    case_id: `CASE-${caseIdNumber}`,
+    case_id: caseIdFromUser(item.user_id),
     user_id: item.user_id,
     risk_score: Number(item.risk_score),
     risk_level: item.risk_level,
@@ -401,7 +400,7 @@ export default function Investigation() {
           return;
         }
 
-        const transformedCases = items.map((item, idx) => transformToInvestigationCase(item, idx));
+        const transformedCases = items.map((item) => transformToInvestigationCase(item));
         console.log('=== Investigation: Transformed cases ===', transformedCases);
         setCases(transformedCases);
 
@@ -436,9 +435,7 @@ export default function Investigation() {
       }
 
       const items = response.items;
-      const transformedCases = items.map((item, idx) =>
-        transformToInvestigationCase(item, idx + (currentPage * PAGE_SIZE))
-      );
+      const transformedCases = items.map((item) => transformToInvestigationCase(item));
 
       setCases(prev => [...prev, ...transformedCases]);
       setCurrentPage(nextPage);

@@ -136,9 +136,23 @@ class GraphAnalysisService:
         """
         Detect all suspicious clusters and store in database.
 
+        Replaces any previously stored detection results: graph detection is
+        a full re-computation over the current device data, so leftover rows
+        from an earlier run would leave users members of BOTH the stale and
+        the fresh cluster. _calculate_graph_score sums over every membership,
+        so stale duplicates inflate graph_score toward its cap on each rerun.
+
         Returns:
             List of created AccountCluster objects
         """
+        from sqlalchemy import delete
+        from app.models.database import ClusterMember
+
+        # Clear previous detection results (members first — FK to clusters)
+        await self.db.execute(delete(ClusterMember))
+        await self.db.execute(delete(AccountCluster))
+        await self.db.flush()
+
         # Detect device sharing clusters
         device_clusters = await self.detect_device_sharing_clusters()
 
@@ -237,6 +251,12 @@ class GraphAnalysisService:
         """
         Calculate risk score for a cluster.
 
+        Deterministic: a pure function of the cluster's own structure. It
+        feeds graph_score, which feeds the final risk_score — the same
+        cluster data must always produce the same score, or every pipeline
+        run relabels every case (observed as U00010 drifting 87.02 -> 86.14
+        with an IDENTICAL feature vector and identical rule/ML scores).
+
         Args:
             members: List of user IDs in cluster
             graph: NetworkX graph
@@ -255,10 +275,15 @@ class GraphAnalysisService:
         else:
             connectivity_score = 0
 
-        total_score = size_score + connectivity_score
+        # NOTE: intentionally NO additional term here. The original code added
+        # random.uniform(0, 20) "for demo", which made cluster risk — and
+        # therefore graph_score and the final risk_score — nondeterministic:
+        # identical input data scored differently on every pipeline run
+        # (U00010 drifted 87.02 -> 86.14 with an identical feature vector and
+        # identical rule/ML component scores). Risk scoring must be a pure
+        # function of the evidence; any deliberate jitter belongs in a seeded
+        # data generator, never in the scorer.
 
-        # Add some randomness for demo
-        import random
-        total_score += random.uniform(0, 20)
+        total_score = size_score + connectivity_score
 
         return round(min(total_score, 100), 2)
